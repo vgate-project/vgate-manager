@@ -1,0 +1,46 @@
+# manager/docker-compose.yml
+#
+# Run once first:  docker network create vgate
+# Then:            docker compose -f manager/docker-compose.yml up -d
+#                   docker compose -f server/docker-compose.yml up -d
+#
+# To inject the build date:
+#   BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) docker compose -f manager/docker-compose.yml build
+
+services:
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: "${BUILD_DATE}"
+    image: ghcr.io/vgate-project/vgate-manager:latest
+    container_name: vgate-manager
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      SERVER_PORT: "8081"
+      JWT_SECRET: "${JWT_SECRET:-change-me-in-production}"
+      ADMIN_BOOTSTRAP_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_BOOTSTRAP_PASSWORD: "${ADMIN_PASSWORD:-change-me}"
+      DB_DIALECT: "sqlite"
+      DB_DSN: "/app/data/vgate_manager.db"
+      LOG_LEVEL: "info"
+    volumes:
+      - manager-data:/app/data
+    networks:
+      - vgate
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  manager-data:
+
+networks:
+  vgate:
+    external: true

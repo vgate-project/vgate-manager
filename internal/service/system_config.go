@@ -1,0 +1,507 @@
+package service
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+
+	log "github.com/sirupsen/logrus"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/vgate-project/vgate-manager/config"
+	"github.com/vgate-project/vgate-manager/internal/model"
+)
+
+// Manager runtime-config SystemConfig keys. These mirror the corresponding
+// fields in config.yml and can be overridden at runtime via
+// PUT /api/v1/admin/system-config. The JWT secret (jwt.secret) is intentionally
+// excluded — it stays in config.yml / env per model.SystemConfig's convention.
+const (
+	CfgKeyJWTAccessTTLSecs       = "jwt.access_ttl_secs"
+	CfgKeyJWTRefreshTTLSecs      = "jwt.refresh_ttl_secs"
+	CfgKeyLogLevel               = "log.level"
+	CfgKeyLogFormat              = "log.format"
+	CfgKeyCORSAllowedOrigins     = "cors.allowed_origins" // JSON array string, e.g. ["*"]
+	CfgKeyServerReadTimeoutSecs  = "server.read_timeout_secs"
+	CfgKeyServerWriteTimeoutSecs = "server.write_timeout_secs"
+	// CfgKeyQuotaResetDay is the global monthly quota reset day-of-month
+	// (1-28). It applies to every user whose quota_reset_enabled flag is true;
+	// the per-user reset day was removed in favor of this single global value.
+	CfgKeyQuotaResetDay = "quota.reset_day"
+
+	// CfgKeyPasswordMinLength is the minimum accepted password length enforced
+	// on password set/change (admin + user). 0/empty falls back to the default.
+	CfgKeyPasswordMinLength = "password.min_length"
+	// CfgKeyPasswordRequireComplexity toggles the complexity rule
+	// ("true"|"false"): when enabled a password must contain lowercase,
+	// uppercase, and a digit.
+	CfgKeyPasswordRequireComplexity = "password.require_complexity"
+
+	// CfgKeyRegisterEnabled toggles public user registration ("true"|"false").
+	CfgKeyRegisterEnabled = "user.register_enabled"
+	// CfgKeyRegisterRequireInvite forces a valid invite code on registration
+	// ("true"|"false"). Only consulted when registration is enabled.
+	CfgKeyRegisterRequireInvite = "user.register_require_invite"
+	// CfgKeyRegisterRequireEmailVerify holds new accounts in a disabled/pending
+	// state until the user clicks the emailed verification link
+	// ("true"|"false"). When enabled, registration does not auto-login.
+	CfgKeyRegisterRequireEmailVerify = "user.register_require_email_verify"
+	// CfgKeyInviteDefaultUserQuota is the per-user cap on successful
+	// registrations a user may sponsor via self-generated invite codes. 0 disables
+	// user-generated invites (admins can still mint codes directly).
+	CfgKeyInviteDefaultUserQuota = "invite.default_user_quota"
+	// CfgKeyAppUserBaseURL is the public base URL of the user-facing SPA, used
+	// to build clickable links in emails (verification). Empty ⇒ emails fall
+	// back to printing the raw token with manual instructions.
+	CfgKeyAppUserBaseURL = "app.user_base_url"
+
+	// Email (SMTP) config keys. Values are stored as SystemConfig rows so an
+	// admin can configure mail delivery at runtime without editing config.yml.
+	// email.smtp_pass is the only secret here and is stored in plaintext at the
+	// same trust level as alipay.private_key (self-hosted, single-tenant).
+	CfgKeyEmailEnabled      = "email.enabled"       // "true" | "false" — gate outbound mail
+	CfgKeyEmailSMTPHost     = "email.smtp_host"     // e.g. smtp.example.com
+	CfgKeyEmailSMTPPort     = "email.smtp_port"     // e.g. 587 (starttls) / 465 (ssl) / 25 (none)
+	CfgKeyEmailSMTPUser     = "email.smtp_user"     // auth user (empty ⇒ no auth)
+	CfgKeyEmailSMTPPass     = "email.smtp_pass"     // auth password
+	CfgKeyEmailSMTPFrom     = "email.smtp_from"     // From: address
+	CfgKeyEmailSMTPSecurity = "email.smtp_security" // "none" | "starttls" | "ssl" (default "starttls")
+
+	// Captcha (Cloudflare Turnstile) config keys. The feature is opt-in: when
+	// captcha.turnstile_enabled is "false" (the default) no challenge is
+	// required anywhere. An admin enables it at runtime and pastes the site +
+	// secret keys from their Turnstile widget; no restart is needed.
+	CfgKeyCaptchaTurnstileEnabled   = "captcha.turnstile_enabled"    // "true" | "false"
+	CfgKeyCaptchaTurnstileSiteKey   = "captcha.turnstile_site_key"   // public widget key
+	CfgKeyCaptchaTurnstileSecretKey = "captcha.turnstile_secret_key" // server-side secret
+
+	// CfgKeySubBaseURLs holds the list of subscription base URLs (bare
+	// origins, no path, e.g. "https://sub.example.com"). When non-empty the
+	// user subscription link is built from a random entry; when empty the
+	// request origin is used as the fallback. Stored as a JSON array string.
+	CfgKeySubBaseURLs = "sub.base_urls"
+)
+
+type SystemConfigService struct {
+	db *gorm.DB
+
+	// cache holds the full key/value set in process memory so that hot paths
+	// (CORS middleware, token issuance, order payment) never read the database
+	// on every request. It is populated lazily on first read and invalidated
+	// (rewarmed) on every write, so PUT /admin/system-config stays hot-applied.
+	mu    sync.RWMutex
+	cache map[string]string
+	ready bool
+}
+
+func NewSystemConfigService(db *gorm.DB) *SystemConfigService {
+	s := &SystemConfigService{db: db}
+	// Best-effort warm so the first request is served from cache too.
+	if err := s.refreshCache(); err != nil {
+		log.Warnf("system-config: failed to warm cache on init: %v", err)
+	}
+	return s
+}
+
+// refreshCache loads the full key/value set from the database into the in-memory
+// cache. Callers must NOT hold s.mu.
+func (s *SystemConfigService) refreshCache() error {
+	var cfgs []model.SystemConfig
+	if err := s.db.Find(&cfgs).Error; err != nil {
+		return err
+	}
+	m := make(map[string]string, len(cfgs))
+	for _, c := range cfgs {
+		m[c.Key] = c.Value
+	}
+	s.mu.Lock()
+	s.cache = m
+	s.ready = true
+	s.mu.Unlock()
+	return nil
+}
+
+// GetAll returns all key/value runtime settings, served from the in-memory cache.
+// On a cold cache it warms once from the database, then every subsequent read is
+// lock-only (no DB hit).
+func (s *SystemConfigService) GetAll() (map[string]string, error) {
+	s.mu.RLock()
+	if s.ready {
+		cp := make(map[string]string, len(s.cache))
+		for k, v := range s.cache {
+			cp[k] = v
+		}
+		s.mu.RUnlock()
+		return cp, nil
+	}
+	s.mu.RUnlock()
+
+	if err := s.refreshCache(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	cp := make(map[string]string, len(s.cache))
+	for k, v := range s.cache {
+		cp[k] = v
+	}
+	s.mu.RUnlock()
+	return cp, nil
+}
+
+// AlipayConfig holds the alipay credentials/endpoints. Values are stored as
+// SystemConfig rows (key "alipay.*") so they can be edited from the admin
+// backend at runtime without restarting the server.
+type AlipayConfig struct {
+	AppID      string
+	PrivateKey string
+	PublicKey  string
+	NotifyURL  string
+	ReturnURL  string
+	Sandbox    bool
+}
+
+// Alipay config SystemConfig keys.
+const (
+	AlipayKeyAppID      = "alipay.app_id"
+	AlipayKeyPrivateKey = "alipay.private_key"
+	AlipayKeyPublicKey  = "alipay.public_key"
+	AlipayKeyNotifyURL  = "alipay.notify_url"
+	AlipayKeyReturnURL  = "alipay.return_url"
+	AlipayKeySandbox    = "alipay.sandbox" // "true" | "false"
+)
+
+// GetAlipayConfig reads the alipay settings from SystemConfig. An empty AppID
+// means alipay has not been configured yet.
+func (s *SystemConfigService) GetAlipayConfig() (AlipayConfig, error) {
+	m, err := s.GetAll()
+	if err != nil {
+		return AlipayConfig{}, err
+	}
+	return AlipayConfig{
+		AppID:      m[AlipayKeyAppID],
+		PrivateKey: m[AlipayKeyPrivateKey],
+		PublicKey:  m[AlipayKeyPublicKey],
+		NotifyURL:  m[AlipayKeyNotifyURL],
+		ReturnURL:  m[AlipayKeyReturnURL],
+		Sandbox:    m[AlipayKeySandbox] == "true",
+	}, nil
+}
+
+// PasswordPolicy describes the strength rules enforced when a password is set
+// or changed (admin and user self-service). Values are sourced from
+// SystemConfig so an admin can tune them at runtime without a restart.
+type PasswordPolicy struct {
+	MinLength         int
+	RequireComplexity bool
+}
+
+// DefaultPasswordPolicy returns the baseline used when SystemConfig is
+// unavailable (e.g. CLI bootstrap) or a key is missing/invalid.
+func DefaultPasswordPolicy() PasswordPolicy {
+	return PasswordPolicy{MinLength: 8, RequireComplexity: false}
+}
+
+// GetPasswordPolicy reads the password policy from SystemConfig, falling back
+// to DefaultPasswordPolicy on any read/parse failure.
+func (s *SystemConfigService) GetPasswordPolicy() PasswordPolicy {
+	def := DefaultPasswordPolicy()
+	m, err := s.GetAll()
+	if err != nil {
+		return def
+	}
+	if v, ok := m[CfgKeyPasswordMinLength]; ok {
+		if n, e := strconv.Atoi(v); e == nil && n > 0 {
+			def.MinLength = n
+		}
+	}
+	if v, ok := m[CfgKeyPasswordRequireComplexity]; ok {
+		def.RequireComplexity = v == "true"
+	}
+	return def
+}
+
+// SetAll upserts all key/value pairs in a single transaction, then rewarms the
+// in-memory cache so the next read sees the new values (hot-apply).
+func (s *SystemConfigService) SetAll(values map[string]string) error {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		for k, v := range values {
+			if err := tx.Save(&model.SystemConfig{Key: k, Value: v}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return s.refreshCache()
+}
+
+// Get returns a single SystemConfig value by key, served from the in-memory cache.
+// A cold cache is warmed from the database on first access.
+func (s *SystemConfigService) Get(key string) (string, error) {
+	s.mu.RLock()
+	if s.ready {
+		v, ok := s.cache[key]
+		s.mu.RUnlock()
+		if !ok {
+			return "", gorm.ErrRecordNotFound
+		}
+		return v, nil
+	}
+	s.mu.RUnlock()
+
+	if err := s.refreshCache(); err != nil {
+		return "", err
+	}
+	s.mu.RLock()
+	v, ok := s.cache[key]
+	s.mu.RUnlock()
+	if !ok {
+		return "", gorm.ErrRecordNotFound
+	}
+	return v, nil
+}
+
+func (s *SystemConfigService) IsRegisterEnabled() bool {
+	v, err := s.Get(CfgKeyRegisterEnabled)
+	if err != nil {
+		return false
+	}
+	return v == "true"
+}
+
+// IsRegisterRequireInvite reports whether a valid invite code is mandatory to
+// register. Only meaningful when IsRegisterEnabled is also true.
+func (s *SystemConfigService) IsRegisterRequireInvite() bool {
+	v, err := s.Get(CfgKeyRegisterRequireInvite)
+	if err != nil {
+		return false
+	}
+	return v == "true"
+}
+
+// IsRegisterRequireEmailVerify reports whether new accounts are held pending
+// email verification instead of being activated immediately.
+func (s *SystemConfigService) IsRegisterRequireEmailVerify() bool {
+	v, err := s.Get(CfgKeyRegisterRequireEmailVerify)
+	if err != nil {
+		return false
+	}
+	return v == "true"
+}
+
+// IsCaptchaEnabled reports whether Cloudflare Turnstile gating is turned on.
+func (s *SystemConfigService) IsCaptchaEnabled() bool {
+	v, err := s.Get(CfgKeyCaptchaTurnstileEnabled)
+	if err != nil {
+		return false
+	}
+	return v == "true"
+}
+
+// CaptchaSiteKey returns the public Turnstile site key for rendering the widget.
+func (s *SystemConfigService) CaptchaSiteKey() string {
+	v, err := s.Get(CfgKeyCaptchaTurnstileSiteKey)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// GetInviteDefaultUserQuota returns the per-user invite cap (default 0).
+func (s *SystemConfigService) GetInviteDefaultUserQuota() int {
+	v, err := s.Get(CfgKeyInviteDefaultUserQuota)
+	if err != nil {
+		return 0
+	}
+	n, e := strconv.Atoi(v)
+	if e != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// GetAppUserBaseURL returns the public base URL of the user SPA used to build
+// emailed links (may be empty).
+func (s *SystemConfigService) GetAppUserBaseURL() string {
+	v, err := s.Get(CfgKeyAppUserBaseURL)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// GetSubBaseURLs returns the configured subscription base URLs (bare origins,
+// no path). Each entry is validated to be an absolute http/https URL and is
+// trimmed of any trailing slash; invalid entries are filtered out so callers
+// never receive a malformed URL. A stored value that is not valid JSON returns
+// an error (so a broken admin edit is surfaced rather than silently ignored).
+func (s *SystemConfigService) GetSubBaseURLs() ([]string, error) {
+	v, err := s.Get(CfgKeySubBaseURLs)
+	if err != nil {
+		// Absent key ⇒ empty list (fall back to request origin elsewhere).
+		return nil, nil
+	}
+	var raw []string
+	if err := json.Unmarshal([]byte(v), &raw); err != nil {
+		return nil, fmt.Errorf("invalid %s: not a JSON array: %w", CfgKeySubBaseURLs, err)
+	}
+	out := make([]string, 0, len(raw))
+	for _, u := range raw {
+		trimmed := strings.TrimRight(strings.TrimSpace(u), "/")
+		if trimmed == "" {
+			continue
+		}
+		parsed, err := url.ParseRequestURI(trimmed)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			log.Warnf("system-config: skipping invalid %s entry %q", CfgKeySubBaseURLs, u)
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out, nil
+}
+
+// defaultConfigRows returns the migrated (DB-backed) runtime-config keys and
+// their hardcoded default values, sourced from config.DefaultConfig(). Only
+// these hot-reloadable keys are eligible to be written into the database;
+// server.port, db.*, jwt.secret and admin.bootstrap.* are deliberately excluded
+// (server.port/db are startup/infra config sourced from config.yml — db must
+// exist before it can be read, and port requires a listener rebind i.e. a
+// restart, so it is not hot-reloadable).
+func (s *SystemConfigService) defaultConfigRows() map[string]string {
+	d := config.DefaultConfig()
+	cors, err := json.Marshal(d.CORS.AllowedOrigins)
+	if err != nil {
+		cors = []byte(`["*"]`)
+	}
+	return map[string]string{
+		CfgKeyJWTAccessTTLSecs:           strconv.Itoa(d.JWT.AccessTTLSecs),
+		CfgKeyJWTRefreshTTLSecs:          strconv.Itoa(d.JWT.RefreshTTLSecs),
+		CfgKeyLogLevel:                   d.Log.Level,
+		CfgKeyLogFormat:                  d.Log.Format,
+		CfgKeyCORSAllowedOrigins:         string(cors),
+		CfgKeyServerReadTimeoutSecs:      strconv.Itoa(d.Server.ReadTimeoutSecs),
+		CfgKeyServerWriteTimeoutSecs:     strconv.Itoa(d.Server.WriteTimeoutSecs),
+		CfgKeyQuotaResetDay:              "1",
+		CfgKeyPasswordMinLength:          "8",
+		CfgKeyPasswordRequireComplexity:  "false",
+		CfgKeyRegisterEnabled:            "false",
+		CfgKeyRegisterRequireInvite:      "false",
+		CfgKeyRegisterRequireEmailVerify: "false",
+		CfgKeyInviteDefaultUserQuota:     "5",
+		CfgKeyAppUserBaseURL:             "",
+		CfgKeyEmailEnabled:               "false",
+		CfgKeyEmailSMTPHost:              "",
+		CfgKeyEmailSMTPPort:              "587",
+		CfgKeyEmailSMTPUser:              "",
+		CfgKeyEmailSMTPPass:              "",
+		CfgKeyEmailSMTPFrom:              "",
+		CfgKeyEmailSMTPSecurity:          "starttls",
+		CfgKeyCaptchaTurnstileEnabled:    "false",
+		CfgKeyCaptchaTurnstileSiteKey:    "",
+		CfgKeyCaptchaTurnstileSecretKey:  "",
+		CfgKeySubBaseURLs:                "[]",
+	}
+}
+
+// persistDefault inserts a default config row, but only if the key does not
+// already exist (idempotent upsert — never overwrites an admin's edit). It
+// rewarms the cache so the seeded value is visible to subsequent reads.
+func (s *SystemConfigService) persistDefault(key, value string) error {
+	err := s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoNothing: true,
+	}).Create(&model.SystemConfig{Key: key, Value: value}).Error
+	if err != nil {
+		return err
+	}
+	return s.refreshCache()
+}
+
+// ApplyOverrides returns a Config where the migrated (DB-backed) sections come
+// SOLELY from the database — config.yml file values for those sections are
+// intentionally ignored. db.*, jwt.secret and admin.bootstrap.* are kept from
+// base (they must come from config.yml / env). A DB read error is returned to
+// the caller so it can fall back to the un-overridden config entirely;
+// individual parse failures only warn and keep the hardcoded default.
+func (s *SystemConfigService) ApplyOverrides(base *config.Config) (*config.Config, error) {
+	m, err := s.GetAll()
+	if err != nil {
+		return nil, err
+	}
+
+	// Start from base. server.port stays sourced from config.yml (startup/infra
+	// config requiring a listener rebind), so it is NOT reset here. The other
+	// migrated sections are reset to hardcoded defaults so config.yml values
+	// for them are never used as a fallback.
+	out := *base
+	def := config.DefaultConfig()
+	out.JWT.AccessTTLSecs = def.JWT.AccessTTLSecs
+	out.JWT.RefreshTTLSecs = def.JWT.RefreshTTLSecs
+	out.Log = def.Log
+	out.CORS = def.CORS
+	out.Server.ReadTimeoutSecs = def.Server.ReadTimeoutSecs
+	out.Server.WriteTimeoutSecs = def.Server.WriteTimeoutSecs
+
+	// Write-on-miss: any migrated key absent from the DB gets its DefaultConfig
+	// value written back, so the database is always the authoritative, complete
+	// source (GET shows defaults; a runtime-deleted row is restored next boot).
+	for k, v := range s.defaultConfigRows() {
+		if _, ok := m[k]; ok {
+			continue
+		}
+		if err := s.persistDefault(k, v); err != nil {
+			log.Warnf("system-config: failed to seed default %s: %v", k, err)
+		}
+	}
+
+	if v, ok := m[CfgKeyJWTAccessTTLSecs]; ok {
+		if n, e := strconv.Atoi(v); e != nil {
+			log.Warnf("system-config: invalid %s=%q, keep default %d: %v", CfgKeyJWTAccessTTLSecs, v, def.JWT.AccessTTLSecs, e)
+		} else {
+			out.JWT.AccessTTLSecs = n
+		}
+	}
+	if v, ok := m[CfgKeyJWTRefreshTTLSecs]; ok {
+		if n, e := strconv.Atoi(v); e != nil {
+			log.Warnf("system-config: invalid %s=%q, keep default %d: %v", CfgKeyJWTRefreshTTLSecs, v, def.JWT.RefreshTTLSecs, e)
+		} else {
+			out.JWT.RefreshTTLSecs = n
+		}
+	}
+	if v, ok := m[CfgKeyLogLevel]; ok {
+		out.Log.Level = v
+	}
+	if v, ok := m[CfgKeyLogFormat]; ok {
+		out.Log.Format = v
+	}
+	if v, ok := m[CfgKeyCORSAllowedOrigins]; ok {
+		var origins []string
+		if e := json.Unmarshal([]byte(v), &origins); e != nil {
+			log.Warnf("system-config: invalid %s=%q, keep default: %v", CfgKeyCORSAllowedOrigins, v, e)
+		} else {
+			out.CORS.AllowedOrigins = origins
+		}
+	}
+	if v, ok := m[CfgKeyServerReadTimeoutSecs]; ok {
+		if n, e := strconv.Atoi(v); e != nil {
+			log.Warnf("system-config: invalid %s=%q, keep default %d: %v", CfgKeyServerReadTimeoutSecs, v, def.Server.ReadTimeoutSecs, e)
+		} else {
+			out.Server.ReadTimeoutSecs = n
+		}
+	}
+	if v, ok := m[CfgKeyServerWriteTimeoutSecs]; ok {
+		if n, e := strconv.Atoi(v); e != nil {
+			log.Warnf("system-config: invalid %s=%q, keep default %d: %v", CfgKeyServerWriteTimeoutSecs, v, def.Server.WriteTimeoutSecs, e)
+		} else {
+			out.Server.WriteTimeoutSecs = n
+		}
+	}
+
+	return &out, nil
+}
