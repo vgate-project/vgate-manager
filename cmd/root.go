@@ -137,16 +137,16 @@ func run() {
 		}
 	}()
 
-	// Hourly traffic-stats aggregation: snapshot once at startup, then hourly.
+	// Clean up old hourly stats: they're only needed for the last 48h.
 	statsSvc := service.NewStatsService(db)
 	go func() {
-		if err := statsSvc.AggregateHourly(); err != nil {
+		if err := statsSvc.DeleteOldHourlyStats(); err != nil {
 			log.Errorf("initial stats aggregation: %v", err)
 		}
-		ticker := time.NewTicker(time.Hour)
+		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := statsSvc.AggregateHourly(); err != nil {
+			if err := statsSvc.DeleteOldHourlyStats(); err != nil {
 				log.Errorf("hourly stats aggregation: %v", err)
 			}
 		}

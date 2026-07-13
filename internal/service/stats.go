@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/vgate-project/vgate-manager/internal/api/dto"
 	"github.com/vgate-project/vgate-manager/internal/model"
@@ -18,43 +17,20 @@ func NewStatsService(db *gorm.DB) *StatsService {
 	return &StatsService{db: db}
 }
 
-// AggregateHourly snapshots each user's cumulative traffic totals into
-// traffic_hourly_stat for the current hour, then prunes rows older than 48h.
-// Idempotent: re-running for the same hour overwrites the snapshot.
-func (s *StatsService) AggregateHourly() error {
-	hour := time.Now().UTC().Truncate(time.Hour)
-
-	var users []model.User
-	if err := s.db.Select("id", "up_total", "down_total").Find(&users).Error; err != nil {
-		return err
-	}
-
-	if len(users) > 0 {
-		rows := make([]model.TrafficHourlyStat, 0, len(users))
-		for _, u := range users {
-			rows = append(rows, model.TrafficHourlyStat{
-				UserID:    u.ID,
-				Hour:      hour,
-				UpTotal:   u.UpTotal,
-				DownTotal: u.DownTotal,
-			})
-		}
-		if err := s.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "user_id"}, {Name: "hour"}},
-			DoUpdates: clause.AssignmentColumns([]string{"up_total", "down_total"}),
-		}).Create(&rows).Error; err != nil {
-			return err
-		}
-	}
-
-	cutoff := hour.Add(-48 * time.Hour)
+// DeleteOldHourlyStats prunes traffic_hourly_stat rows older than 48h. The hourly
+// per-user deltas are now written directly by ServerService.ReportTraffic, so
+// this job no longer creates snapshots — it only expires stale rows. Idempotent.
+func (s *StatsService) DeleteOldHourlyStats() error {
+	cutoff := time.Now().UTC().Truncate(time.Hour).Add(-48 * time.Hour)
 	return s.db.Where("hour < ?", cutoff).Delete(&model.TrafficHourlyStat{}).Error
 }
 
 // GetOverview computes dashboard statistics: node/user counts (total +
-// online) and an hourly traffic series for the last 24 hours. The 24h traffic
-// totals are derived by summing the series deltas (a telescoping sum of the
-// hourly snapshots), so no separate cumulative-total query is needed.
+// online) and an hourly traffic series for the last 24 hours. The series and
+// 24h totals are derived by SUMming the per-user hourly deltas stored in
+// traffic_hourly_stat (written additively by ServerService.ReportTraffic), so
+// no separate cumulative-total query is needed and a quota reset / plan
+// purchase that zeroes users.up_total can no longer produce a negative hour.
 func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 	now := time.Now()
 	hourNow := now.UTC().Truncate(time.Hour)
@@ -91,70 +67,55 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 		return nil, err
 	}
 
-	// Hourly cumulative sums for the last 25 hours (one extra to compute the
-	// first delta). Each series point = snapshot[h] - snapshot[h-1].
+	// Per-user hourly deltas are written directly by ServerService.ReportTraffic,
+	// so each bucket below is already that hour's traffic (no telescoping). SUM
+	// across users per hour; emit one point per hour (0 when no data). Because
+	// bars are never derived by subtracting cumulative counters, a quota reset /
+	// plan purchase that zeroes up_total can no longer produce a negative hour.
 	type snapRow struct {
 		Hour time.Time
 		Up   int64
 		Down int64
 	}
 	var snaps []snapRow
+	prevStart := cutoff.Add(-24 * time.Hour) // start of previous 24h window (= hourNow - 48h)
 	if err := s.db.Model(&model.TrafficHourlyStat{}).
 		Select("hour, SUM(up_total) AS up, SUM(down_total) AS down").
-		// Fetch 49h: the previous 24h period needs its baseline snapshot at
-		// (cutoff-24h)-1h, so the window must start one hour before that.
-		Where("hour >= ? AND hour <= ?", cutoff.Add(-25*time.Hour), hourNow).
+		Where("hour >= ? AND hour <= ?", prevStart, hourNow).
 		Group("hour").Order("hour ASC").
 		Scan(&snaps).Error; err != nil {
 		return nil, err
 	}
 
-	// Build a lookup so missing hours are treated as carry-forward (0 delta).
 	byHour := make(map[time.Time]snapRow, len(snaps))
 	for _, r := range snaps {
 		byHour[r.Hour] = r
 	}
 
+	// One point per hour from cutoff to hourNow (inclusive). Missing hours are 0.
 	series := make([]dto.HourlyStat, 0, 24)
-	prevUp, prevDown := int64(0), int64(0)
-	if baseline, ok := byHour[cutoff.Add(-time.Hour)]; ok {
-		prevUp, prevDown = baseline.Up, baseline.Down
-	}
 	for h := cutoff; !h.After(hourNow); h = h.Add(time.Hour) {
-		cur2, ok := byHour[h]
-		if ok {
-			series = append(series, dto.HourlyStat{
-				Hour: h,
-				Up:   cur2.Up - prevUp,
-				Down: cur2.Down - prevDown,
-			})
-			prevUp, prevDown = cur2.Up, cur2.Down
+		if cur, ok := byHour[h]; ok {
+			series = append(series, dto.HourlyStat{Hour: h, Up: cur.Up, Down: cur.Down})
 		} else {
-			// No snapshot for this hour → 0 usage (no data collected).
 			series = append(series, dto.HourlyStat{Hour: h})
 		}
 	}
 
-	// 24h totals = sum of the hourly deltas.
+	// 24h totals = sum of the hourly buckets in the current window.
 	var up24h, down24h int64
 	for _, p := range series {
 		up24h += p.Up
 		down24h += p.Down
 	}
 
-	// Previous 24h traffic totals, for day-over-day comparison. Same
-	// telescoping over the snapshot map, shifted back 24h.
-	prevStart := cutoff.Add(-24 * time.Hour)
-	prevBaseUp, prevBaseDown := int64(0), int64(0)
-	if b, ok := byHour[prevStart.Add(-time.Hour)]; ok {
-		prevBaseUp, prevBaseDown = b.Up, b.Down
-	}
+	// Previous 24h traffic totals, for day-over-day comparison: sum of the
+	// buckets in the earlier half of the same query window ([prevStart, cutoff)).
 	up24hPrev, down24hPrev := int64(0), int64(0)
-	for h := prevStart; !h.After(cutoff); h = h.Add(time.Hour) {
+	for h := prevStart; h.Before(cutoff); h = h.Add(time.Hour) {
 		if cur, ok := byHour[h]; ok {
-			up24hPrev += cur.Up - prevBaseUp
-			down24hPrev += cur.Down - prevBaseDown
-			prevBaseUp, prevBaseDown = cur.Up, cur.Down
+			up24hPrev += cur.Up
+			down24hPrev += cur.Down
 		}
 	}
 

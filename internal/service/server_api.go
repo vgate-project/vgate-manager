@@ -120,10 +120,19 @@ func (s *ServerService) eligibleUserIDs(nodeID string, nodeLevel int) ([]string,
 }
 
 // ReportTraffic aggregates delta traffic into cumulative per-user and
-// per-node-per-user totals. The node's last-seen timestamp (liveness) is
-// refreshed centrally by the NodeAuth middleware on every successful request,
-// so it is intentionally NOT updated here. Unknown/disabled emails are skipped
-// with a warning (no ghost users). The whole update is transactional.
+// per-node-per-user totals, and into per-user hourly deltas in
+// traffic_hourly_stat (used by the dashboard traffic series). The node's
+// last-seen timestamp (liveness) is refreshed centrally by the NodeAuth
+// middleware on every successful request, so it is intentionally NOT updated
+// here. Unknown/disabled emails are skipped with a warning (no ghost users).
+// The whole update is transactional.
+//
+// The per-node traffic_multiplier scales the bytes reported by a node's users
+// "for billing" (model.Node.TrafficMultiplier), so the CUMULATIVE totals
+// (users.up_total/down_total and user_node_traffic) are written multiplied.
+// The per-user hourly delta in traffic_hourly_stat is written UN-MULTIPLIED
+// (the real reported bytes) so the dashboard 24h series / hourly chart reflects
+// actual traffic rather than the billing-inflated figure.
 func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) error {
 	// Resolve the traffic multiplier once. Virtual child nodes never poll, but
 	// their traffic is reported against the real parent; mirror FetchConfig and
@@ -134,6 +143,8 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
+		hour := now.UTC().Truncate(time.Hour)
+		statRows := make([]model.TrafficHourlyStat, 0, len(deltas))
 		for _, d := range deltas {
 			if d.Up == 0 && d.Down == 0 {
 				continue
@@ -169,6 +180,31 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 				}),
 			}).Create(&model.UserNodeTraffic{UserID: user.ID, NodeID: nodeID, UpTotal: up, DownTotal: down}).Error; err != nil {
 				return fmt.Errorf("upsert node traffic: %w", err)
+			}
+			// Per-user hourly delta for the dashboard traffic series. Written
+			// UN-MULTIPLIED (the real reported bytes) so the time-series chart
+			// reflects actual traffic; the cumulative totals above are the
+			// multiplied (billing) figures. Upserted additively so concurrent
+			// reports from multiple nodes accumulate into the same
+			// (user_id, hour) bucket.
+			statRows = append(statRows, model.TrafficHourlyStat{
+				UserID:    user.ID,
+				Hour:      hour,
+				UpTotal:   d.Up,
+				DownTotal: d.Down,
+			})
+		}
+
+		// Additively upsert all per-user hourly deltas in a single statement.
+		if len(statRows) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "user_id"}, {Name: "hour"}},
+				DoUpdates: clause.Assignments(map[string]any{
+					"up_total":   gorm.Expr("up_total + EXCLUDED.up_total"),
+					"down_total": gorm.Expr("down_total + EXCLUDED.down_total"),
+				}),
+			}).Create(&statRows).Error; err != nil {
+				return fmt.Errorf("upsert hourly stat: %w", err)
 			}
 		}
 		return nil

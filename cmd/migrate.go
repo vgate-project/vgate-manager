@@ -5,5 +5,4 @@ import (
 )
 
 func migrations(db *gorm.DB) {
-
 }

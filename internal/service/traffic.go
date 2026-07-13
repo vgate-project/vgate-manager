@@ -75,11 +75,12 @@ func (s *TrafficService) ListForUser(userID string, page, pageSize int) ([]UserT
 	return rows, total, err
 }
 
-// HourlyForUser returns the caller's per-hour traffic deltas for the last 24
-// hours, derived from the hourly cumulative snapshots in traffic_hourly_stat
-// (each point = snapshot[h] - snapshot[h-1]). Mirrors StatsService.GetOverview
-// but filtered to a single user. The series has 24 points (one per hour),
-// oldest first; missing hours are reported as 0.
+// HourlyForUser returns the caller's per-hour traffic for the last 24 hours.
+// Rows in traffic_hourly_stat are written by ServerService.ReportTraffic as
+// per-user, per-hour deltas, so each row is already that hour's traffic (no
+// telescoping). Mirrors StatsService.GetOverview but filtered to a single user.
+// The series spans [cutoff, hourNow] (one point per hour), oldest first;
+// missing hours are reported as 0.
 func (s *TrafficService) HourlyForUser(userID string) ([]dto.HourlyStat, error) {
 	hourNow := time.Now().UTC().Truncate(time.Hour)
 	cutoff := hourNow.Add(-24 * time.Hour)
@@ -92,7 +93,7 @@ func (s *TrafficService) HourlyForUser(userID string) ([]dto.HourlyStat, error) 
 	var snaps []snapRow
 	if err := s.db.Model(&model.TrafficHourlyStat{}).
 		Select("hour, up_total AS up, down_total AS down").
-		Where("user_id = ? AND hour >= ? AND hour <= ?", userID, cutoff.Add(-time.Hour), hourNow).
+		Where("user_id = ? AND hour >= ? AND hour <= ?", userID, cutoff, hourNow).
 		Order("hour ASC").
 		Scan(&snaps).Error; err != nil {
 		return nil, err
@@ -104,18 +105,9 @@ func (s *TrafficService) HourlyForUser(userID string) ([]dto.HourlyStat, error) 
 	}
 
 	series := make([]dto.HourlyStat, 0, 24)
-	prevUp, prevDown := int64(0), int64(0)
-	if baseline, ok := byHour[cutoff.Add(-time.Hour)]; ok {
-		prevUp, prevDown = baseline.Up, baseline.Down
-	}
 	for h := cutoff; !h.After(hourNow); h = h.Add(time.Hour) {
 		if cur, ok := byHour[h]; ok {
-			series = append(series, dto.HourlyStat{
-				Hour: h,
-				Up:   cur.Up - prevUp,
-				Down: cur.Down - prevDown,
-			})
-			prevUp, prevDown = cur.Up, cur.Down
+			series = append(series, dto.HourlyStat{Hour: h, Up: cur.Up, Down: cur.Down})
 		} else {
 			series = append(series, dto.HourlyStat{Hour: h})
 		}
