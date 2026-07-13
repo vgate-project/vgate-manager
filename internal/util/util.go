@@ -61,6 +61,17 @@ func NewAnnouncementID() string {
 	return ulid.Make().String()
 }
 
+// NewRedemptionID returns a ULID for a RedemptionCode primary key.
+func NewRedemptionID() string {
+	return ulid.Make().String()
+}
+
+// NewRedemptionCode returns a URL-safe shareable redemption code (24 hex chars,
+// no ambiguous characters). RandomToken already uses crypto/rand.
+func NewRedemptionCode() string {
+	return RandomToken(12)
+}
+
 // NewInviteCode returns a URL-safe shareable invite code (16 hex chars, no
 // ambiguous characters). RandomToken already uses crypto/rand.
 func NewInviteCode() string {

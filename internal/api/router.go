@@ -81,6 +81,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	// wired onto AuthService so registration can validate invite codes and send
 	// verification mail. sysCfg is the shared runtime-config instance.
 	inviteSvc := service.NewInviteService(db, sysCfg)
+	redemptionSvc := service.NewRedemptionService(db)
 	emailSvc := service.NewEmailService(sysCfg)
 	annSvc := service.NewAnnouncementService(db)
 	authSvc.SetInviteService(inviteSvc)
@@ -88,6 +89,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 
 	// User-facing invite + announcement handlers (used in the userProtected group).
 	userInviteH := handler.NewUserInviteHandler(inviteSvc)
+	userRedemptionH := handler.NewUserRedemptionHandler(redemptionSvc)
 	userAnnH := handler.NewUserAnnouncementHandler(annSvc)
 
 	// Public alipay async-notification endpoint (unauthenticated, like /sub).
@@ -129,6 +131,10 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		userProtected.POST("/invites", userInviteH.Create)
 		userProtected.DELETE("/invites/:id", userInviteH.Delete)
 
+		// Redemption codes: redeem a code + view own redemption history.
+		userProtected.POST("/redemption-codes/redeem", userRedemptionH.Redeem)
+		userProtected.GET("/redemption-codes/records", userRedemptionH.Records)
+
 		// Active announcements for the user SPA.
 		userProtected.GET("/announcements", userAnnH.List)
 	}
@@ -147,6 +153,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 
 	// Invite / Announcement / Email handlers (admin surface).
 	adminInviteH := handler.NewAdminInviteHandler(inviteSvc)
+	adminRedemptionH := handler.NewAdminRedemptionHandler(redemptionSvc)
 	adminAnnH := handler.NewAdminAnnouncementHandler(annSvc)
 	adminEmailH := handler.NewAdminEmailHandler(emailSvc, annSvc, db)
 
@@ -191,6 +198,12 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		adminAuth.GET("/invites", adminInviteH.List)
 		adminAuth.POST("/invites", adminInviteH.Create)
 		adminAuth.DELETE("/invites/:id", adminInviteH.Delete)
+
+		// Redemption codes (admin batch-generates; list/delete all; view records).
+		adminAuth.GET("/redemption-codes", adminRedemptionH.List)
+		adminAuth.POST("/redemption-codes", adminRedemptionH.Generate)
+		adminAuth.GET("/redemption-codes/:id/records", adminRedemptionH.Records)
+		adminAuth.DELETE("/redemption-codes/:id", adminRedemptionH.Delete)
 
 		// Announcements (full CRUD; users see only active ones).
 		adminAuth.GET("/announcements", adminAnnH.List)

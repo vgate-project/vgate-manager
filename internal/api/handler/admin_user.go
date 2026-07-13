@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -20,7 +21,16 @@ func NewAdminUserHandler(svc *service.UserService) *AdminUserHandler {
 
 func (h *AdminUserHandler) List(c *gin.Context) {
 	page, pageSize := ParsePaging(c)
-	users, total, err := h.svc.List(page, pageSize)
+	filter := service.UserListFilter{
+		Search: c.Query("search"),
+		SortBy: c.Query("sort_by"),
+		Order:  c.Query("order"),
+	}
+	if v := c.Query("enabled"); v != "" {
+		enabled := strings.EqualFold(v, "true")
+		filter.Enabled = &enabled
+	}
+	users, total, err := h.svc.List(filter, page, pageSize)
 	if writeErr(c, err) {
 		return
 	}

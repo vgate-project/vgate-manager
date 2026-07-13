@@ -92,10 +92,17 @@ func (h *OrderHandler) AdminCreate(c *gin.Context) {
 	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: payURL})
 }
 
-// List lists all orders (admin).
+// List lists all orders (admin), with optional filtering/sorting applied
+// server-side via query params: search, status, sort_by, order.
 func (h *OrderHandler) List(c *gin.Context) {
 	page, pageSize := ParsePaging(c)
-	orders, total, err := h.svc.List(page, pageSize)
+	filter := service.OrderListFilter{
+		Search: c.Query("search"),
+		Status: c.Query("status"),
+		SortBy: c.Query("sort_by"),
+		Order:  c.Query("order"),
+	}
+	orders, total, err := h.svc.List(filter, page, pageSize)
 	if writeErr(c, err) {
 		return
 	}

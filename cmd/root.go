@@ -69,6 +69,8 @@ func run() {
 		&model.SystemConfig{},
 		&model.InviteCode{},
 		&model.EmailVerification{},
+		&model.RedemptionCode{},
+		&model.RedemptionRecord{},
 		&model.Announcement{},
 		&model.Plan{},
 		&model.PlanPrice{},

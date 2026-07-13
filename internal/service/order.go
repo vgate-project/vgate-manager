@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -110,16 +111,17 @@ func (s *OrderService) buildAlipayClient() (*alipay.Client, AlipayConfig, error)
 // URL. The amount is taken from the authoritative source (plan price or traffic
 // package); any client-supplied amount is ignored.
 func (s *OrderService) Create(userID string, p CreateOrderParams) (*model.Order, string, error) {
-	return s.createFor(userID, p)
+	return s.createFor(userID, p, false)
 }
 
 // AdminCreate is like Create but lets an admin place an order on behalf of any
-// user. adminID is kept for audit only.
+// user. adminID is kept for audit only; isAdmin=true relaxes the reset
+// ownership check (an admin intentionally acts for the user).
 func (s *OrderService) AdminCreate(adminID, targetUserID string, p CreateOrderParams) (*model.Order, string, error) {
-	return s.createFor(targetUserID, p)
+	return s.createFor(targetUserID, p, true)
 }
 
-func (s *OrderService) createFor(userID string, p CreateOrderParams) (*model.Order, string, error) {
+func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin bool) (*model.Order, string, error) {
 	// Disallow a second open order: a user may only have one pending order.
 	var pending int64
 	s.db.Model(&model.Order{}).
@@ -176,13 +178,16 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams) (*model.Ord
 		if !plan.ResetEnabled {
 			return nil, "", errors.New("plan has no traffic reset package")
 		}
-		// Ownership: only the user whose active product is this plan may reset.
-		var u model.User
-		if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
-			return nil, "", err
-		}
-		if u.CurrentProductID != plan.ID {
-			return nil, "", errors.New("traffic reset is only available for your active plan")
+		// Self-service reset requires the user's active product to be this plan.
+		// Admins creating on a user's behalf skip this ownership check.
+		if !isAdmin {
+			var u model.User
+			if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
+				return nil, "", err
+			}
+			if u.CurrentProductID != plan.ID {
+				return nil, "", errors.New("traffic reset is only available for your active plan")
+			}
 		}
 		order.PlanID = plan.ID
 		order.Amount = plan.ResetPrice
@@ -390,12 +395,54 @@ func (s *OrderService) ListMine(userID string, page, pageSize int) ([]model.Orde
 	return orders, total, err
 }
 
-// List returns all orders (admin), newest first.
-func (s *OrderService) List(page, pageSize int) ([]model.Order, int64, error) {
-	var orders []model.Order
+// OrderListFilter holds optional filtering/sorting parameters for List.
+type OrderListFilter struct {
+	Search string // substring match on user_id or out_trade_no
+	Status string // pending|paid|closed; empty = all
+	SortBy string // created_at|amount|status|paid_at|user_id|kind
+	Order  string // asc|desc
+}
+
+// orderSortableColumns whitelists columns for ORDER BY to avoid injecting
+// arbitrary user input into SQL.
+var orderSortableColumns = map[string]string{
+	"created_at": "created_at",
+	"amount":     "amount",
+	"status":     "status",
+	"paid_at":    "paid_at",
+	"user_id":    "user_id",
+	"kind":       "kind",
+}
+
+// List returns all orders (admin), with optional filtering/sorting applied
+// server-side. With an empty filter it preserves the original behavior
+// (newest first).
+func (s *OrderService) List(filter OrderListFilter, page, pageSize int) ([]model.Order, int64, error) {
+	q := s.db.Model(&model.Order{})
+	if filter.Search != "" {
+		like := "%" + filter.Search + "%"
+		q = q.Where("user_id LIKE ? OR out_trade_no LIKE ?", like, like)
+	}
+	if filter.Status != "" {
+		q = q.Where("status = ?", filter.Status)
+	}
+
 	var total int64
-	s.db.Model(&model.Order{}).Count(&total)
-	err := s.db.Order("created_at DESC").
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	order := "created_at DESC"
+	if col, ok := orderSortableColumns[filter.SortBy]; ok {
+		dir := "ASC"
+		if strings.EqualFold(filter.Order, "desc") {
+			dir = "DESC"
+		}
+		order = col + " " + dir
+	}
+
+	var orders []model.Order
+	err := q.Order(order).
 		Limit(pageSize).Offset((page - 1) * pageSize).
 		Find(&orders).Error
 	return orders, total, err

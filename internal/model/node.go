@@ -19,6 +19,7 @@ type Node struct {
 	ID            string          `gorm:"primaryKey;size:26" json:"id"`              // ULID
 	Name          string          `gorm:"size:128;not null" json:"name"`             // display name → share-link tag
 	ParentID      *string         `gorm:"size:26;index" json:"parent_id,omitempty"`  // nil = real node; non-nil = virtual child pointing to parent Node.ID (inherits its transport config)
+	ParentName    string          `gorm:"-" json:"parent_name,omitempty"`            // server-populated display name of ParentID; not persisted
 	Address       string          `gorm:"size:255;not null" json:"address"`          // host:port for share links
 	Port          int             `gorm:"not null" json:"port"`                      // server listen port
 	Token         string          `gorm:"size:64;uniqueIndex;not null" json:"token"` // crypto-random secret

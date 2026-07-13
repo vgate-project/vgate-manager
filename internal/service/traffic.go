@@ -92,7 +92,7 @@ func (s *TrafficService) HourlyForUser(userID string) ([]dto.HourlyStat, error) 
 	var snaps []snapRow
 	if err := s.db.Model(&model.TrafficHourlyStat{}).
 		Select("hour, up_total AS up, down_total AS down").
-		Where("user_id = ? AND hour > ? AND hour <= ?", userID, cutoff.Add(-time.Hour), hourNow).
+		Where("user_id = ? AND hour >= ? AND hour <= ?", userID, cutoff.Add(-time.Hour), hourNow).
 		Order("hour ASC").
 		Scan(&snaps).Error; err != nil {
 		return nil, err

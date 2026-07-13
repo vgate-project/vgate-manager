@@ -39,6 +39,9 @@ func (s *NodeService) List(page, pageSize int) ([]model.Node, int64, error) {
 	if err := s.hydrateVirtualOnline(ptrs); err != nil {
 		return nil, 0, err
 	}
+	if err := s.hydrateParentNames(ptrs); err != nil {
+		return nil, 0, err
+	}
 	return nodes, total, err
 }
 
@@ -49,6 +52,9 @@ func (s *NodeService) Get(id string) (*model.Node, error) {
 	}
 	if node.ParentID != nil {
 		if err := s.hydrateVirtualOnline([]*model.Node{&node}); err != nil {
+			return nil, err
+		}
+		if err := s.hydrateParentNames([]*model.Node{&node}); err != nil {
 			return nil, err
 		}
 	}
@@ -62,6 +68,40 @@ func (s *NodeService) ResolveParent(node *model.Node) (*model.Node, error) {
 		return nil, nil
 	}
 	return s.Get(*node.ParentID)
+}
+
+// hydrateParentNames fills ParentName for virtual child nodes from a single
+// query over the distinct parent IDs on the page, so the admin UI can show the
+// parent's display name without depending on the parent being on the same page
+// (which pagination/filtering would otherwise break).
+func (s *NodeService) hydrateParentNames(nodes []*model.Node) error {
+	parentIDs := make([]string, 0)
+	for _, n := range nodes {
+		if n.ParentID != nil {
+			parentIDs = append(parentIDs, *n.ParentID)
+		}
+	}
+	if len(parentIDs) == 0 {
+		return nil
+	}
+	var parents []struct {
+		ID   string `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	if err := s.db.Model(&model.Node{}).Select("id", "name").
+		Where("id IN ?", parentIDs).Find(&parents).Error; err != nil {
+		return err
+	}
+	names := make(map[string]string, len(parents))
+	for i := range parents {
+		names[parents[i].ID] = parents[i].Name
+	}
+	for _, n := range nodes {
+		if n.ParentID != nil {
+			n.ParentName = names[*n.ParentID]
+		}
+	}
+	return nil
 }
 
 // hydrateVirtualOnline backfills LastSeenAt/Online for virtual child nodes from

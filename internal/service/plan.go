@@ -64,11 +64,21 @@ func (s *PlanService) loadEnabledPlanPrice(planID, priceID string) (*model.PlanP
 		return nil, err
 	}
 	var price model.PlanPrice
-	if err := s.db.Where("id = ? AND plan_id = ?", priceID, plan.ID).First(&price).Error; err != nil {
-		return nil, err
+	if priceID != "" {
+		// A specific price was requested; resolve it and ensure it belongs to
+		// this plan and is enabled.
+		err = s.db.Where("id = ? AND plan_id = ? AND enabled = ?", priceID, plan.ID, true).
+			First(&price).Error
+	} else {
+		// No price requested (e.g. an admin order created with only a plan id):
+		// fall back to the first enabled price for the plan so creation still
+		// succeeds instead of failing on a missing price id.
+		err = s.db.Where("plan_id = ? AND enabled = ?", plan.ID, true).
+			Order("sort ASC, created_at ASC").
+			First(&price).Error
 	}
-	if !price.Enabled {
-		return nil, errors.New("plan price is not available")
+	if err != nil {
+		return nil, err
 	}
 	return &price, nil
 }

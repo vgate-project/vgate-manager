@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -20,11 +21,56 @@ func NewUserService(db *gorm.DB, sysCfg *SystemConfigService) *UserService {
 	return &UserService{db: db, sysCfg: sysCfg}
 }
 
-func (s *UserService) List(page, pageSize int) ([]model.User, int64, error) {
-	var users []model.User
+// UserListFilter holds the optional filtering/sorting parameters for List.
+// Enabled is a pointer so that an unset value (nil) means "no filter".
+type UserListFilter struct {
+	Search  string // case-insensitive substring match on email or username
+	Enabled *bool  // filter by enabled state when set
+	SortBy  string // created_at|email|username|quota_bytes|used|expire_at|level
+	Order   string // asc|desc
+}
+
+// sortableColumns whitelists columns that may appear in an ORDER BY clause to
+// avoid injecting arbitrary user input into the SQL query. "used" is a derived
+// expression (up_total + down_total) since there is no stored column for it.
+var sortableColumns = map[string]string{
+	"created_at":  "created_at",
+	"email":       "email",
+	"username":    "username",
+	"level":       "level",
+	"quota_bytes": "quota_bytes",
+	"up_total":    "up_total",
+	"down_total":  "down_total",
+	"used":        "(up_total + down_total)",
+	"expire_at":   "expire_at",
+}
+
+func (s *UserService) List(filter UserListFilter, page, pageSize int) ([]model.User, int64, error) {
+	q := s.db.Model(&model.User{})
+	if filter.Search != "" {
+		like := "%" + filter.Search + "%"
+		q = q.Where("email LIKE ? OR username LIKE ?", like, like)
+	}
+	if filter.Enabled != nil {
+		q = q.Where("enabled = ?", *filter.Enabled)
+	}
+
 	var total int64
-	s.db.Model(&model.User{}).Count(&total)
-	err := s.db.Order("created_at DESC").
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	order := "created_at DESC"
+	if col, ok := sortableColumns[filter.SortBy]; ok {
+		dir := "ASC"
+		if strings.EqualFold(filter.Order, "desc") {
+			dir = "DESC"
+		}
+		order = col + " " + dir
+	}
+
+	var users []model.User
+	err := q.Order(order).
 		Limit(pageSize).Offset((page - 1) * pageSize).
 		Find(&users).Error
 	return users, total, err
