@@ -10,13 +10,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+
 	"github.com/vgate-project/vgate-manager/config"
 	"github.com/vgate-project/vgate-manager/internal/api"
 	"github.com/vgate-project/vgate-manager/internal/model"
 	"github.com/vgate-project/vgate-manager/internal/service"
 	"github.com/vgate-project/vgate-manager/internal/wire"
-	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
 func setupTestDB(t *testing.T) *gorm.DB {

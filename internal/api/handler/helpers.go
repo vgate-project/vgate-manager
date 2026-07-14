@@ -66,11 +66,20 @@ func writeETagged(c *gin.Context, contentType string, body []byte) {
 	etag := etagFor(body)
 	c.Header("ETag", etag)
 	c.Header("Cache-Control", "no-cache")
-	if inm := c.GetHeader("If-None-Match"); inm != "" && inm == etag {
+	// RFC 7232: If-None-Match uses WEAK comparison, so a CDN-downgraded weak
+	// ETag (W/"...") must match its strong form. Exact comparison here would
+	// never return 304 behind such a CDN.
+	if inm := c.GetHeader("If-None-Match"); inm != "" && stripWeak(inm) == stripWeak(etag) {
 		c.Status(http.StatusNotModified)
 		return
 	}
 	c.Data(http.StatusOK, contentType, body)
+}
+
+// stripWeak removes the optional "W/" weak-validator prefix for RFC 7232
+// weak comparison.
+func stripWeak(etag string) string {
+	return strings.TrimPrefix(etag, "W/")
 }
 
 // writeETaggedJSON marshals data and writes it via writeETagged as JSON.
