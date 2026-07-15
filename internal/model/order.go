@@ -7,6 +7,15 @@ const (
 	OrderStatusPaid    = "paid"
 	OrderStatusClosed  = "closed"
 
+	// OrderPlatform* identifies which payment gateway an order belongs to.
+	// "alipay" is the implemented gateway; "manual" is set when an admin marks
+	// an order paid by hand (no real gateway). Future platforms (wechat,
+	// stripe, ...) are added here and wired into the payment Registry.
+	OrderPlatformAlipay = "alipay"
+	OrderPlatformWechat = "wechat"
+	OrderPlatformStripe = "stripe"
+	OrderPlatformManual = "manual"
+
 	// OrderKindPlan is a recurring subscription purchase (applies a plan's
 	// level + quota + duration to the user).
 	OrderKindPlan = "plan"
@@ -36,9 +45,10 @@ type Order struct {
 	ValidityDays     int        `gorm:"default:0" json:"validity_days"`
 	Amount           int64      `gorm:"not null" json:"amount"` // cents, copied from source
 	Status           string     `gorm:"index;size:16;not null;default:'pending'" json:"status"`
+	Platform         string     `gorm:"index;size:16" json:"platform"` // payment gateway: alipay | manual | (future)
 	OutTradeNo       string     `gorm:"uniqueIndex;size:64;not null" json:"out_trade_no"`
-	AlipayTradeNo    string     `gorm:"size:64" json:"alipay_trade_no,omitempty"`
-	Channel          string     `gorm:"size:16" json:"channel"` // "pc" | "wap"
+	TradeNo          string     `gorm:"size:64" json:"trade_no,omitempty"` // gateway-assigned transaction id
+	Channel          string     `gorm:"size:16" json:"channel"`            // alipay-only: "pc" | "wap"
 	PaidAt           *time.Time `json:"paid_at,omitempty"`
 	ExpiredAt        *time.Time `gorm:"index" json:"expired_at,omitempty"` // cron close threshold
 	CreatedAt        time.Time  `json:"created_at"`

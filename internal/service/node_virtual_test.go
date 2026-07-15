@@ -241,7 +241,7 @@ func TestVirtualNodeOnlineReflectsParent(t *testing.T) {
 		t.Errorf("virtual child Online = false, want true (parent recently seen)")
 	}
 
-	nodes, _, err := ns.List(1, 20)
+	nodes, _, err := ns.List(1, 20, "all")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

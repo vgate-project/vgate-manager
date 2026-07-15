@@ -19,8 +19,9 @@ func NewOrderHandler(svc *service.OrderService) *OrderHandler {
 	return &OrderHandler{svc: svc}
 }
 
-// Create places an order for the authenticated user and returns a payment URL.
-// Any user_id in the body is ignored — users can only order for themselves.
+// Create places an order for the authenticated user and returns a PayDirective
+// describing how to collect payment. Any user_id in the body is ignored —
+// users can only order for themselves.
 func (h *OrderHandler) Create(c *gin.Context) {
 	userID := c.GetString("user_id")
 	var req dto.CreateOrderRequest
@@ -28,11 +29,11 @@ func (h *OrderHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	order, payURL, err := h.svc.Create(userID, toOrderParams(c, req))
+	order, directive, err := h.svc.Create(userID, toOrderParams(c, req))
 	if writeErr(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: payURL})
+	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind})
 }
 
 // ListMine lists the authenticated user's own orders.
@@ -54,13 +55,13 @@ func (h *OrderHandler) GetMine(c *gin.Context) {
 	c.JSON(http.StatusOK, order)
 }
 
-// PayMine regenerates a payment URL for the caller's own pending order.
+// PayMine regenerates a payment directive for the caller's own pending order.
 func (h *OrderHandler) PayMine(c *gin.Context) {
-	order, payURL, err := h.svc.PayMine(c.Param("id"), c.GetString("user_id"))
+	order, directive, err := h.svc.PayMine(c.Param("id"), c.GetString("user_id"))
 	if writeErr(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: payURL})
+	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind})
 }
 
 // CloseMine lets the caller close their own pending order.
@@ -79,17 +80,18 @@ func (h *OrderHandler) AdminCreate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	order, payURL, err := h.svc.AdminCreate(adminID, req.UserID, toOrderParams(c, dto.CreateOrderRequest{
+	order, directive, err := h.svc.AdminCreate(adminID, req.UserID, toOrderParams(c, dto.CreateOrderRequest{
 		Kind:             req.Kind,
 		PlanID:           req.PlanID,
 		PlanPriceID:      req.PlanPriceID,
 		TrafficPackageID: req.TrafficPackageID,
 		Channel:          req.Channel,
+		Platform:         req.Platform,
 	}))
 	if writeErr(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: payURL})
+	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind})
 }
 
 // List lists all orders (admin), with optional filtering/sorting applied
@@ -118,14 +120,26 @@ func (h *OrderHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, order)
 }
 
-// AlipayNotify is the public alipay async-notification endpoint. It must be
-// unauthenticated. Alipay expects the literal body "success" (or "failure").
-func (h *OrderHandler) AlipayNotify(c *gin.Context) {
-	if err := c.Request.ParseForm(); err != nil {
-		c.String(http.StatusInternalServerError, "failure")
+// AdminUpdateStatus lets an admin manually set an order's status (paid/closed).
+// Marking an order paid applies its purchase effect; closing cancels it.
+func (h *OrderHandler) AdminUpdateStatus(c *gin.Context) {
+	var req dto.UpdateOrderStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.svc.HandleNotify(c.Request.Context(), c.Request.Form); err != nil {
+	order, err := h.svc.AdminUpdateStatus(c.Param("id"), req.Status, c.GetString("admin_id"))
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, order)
+}
+
+// Notify handles an async payment-gateway notification for the platform named
+// in the URL path (e.g. /billing/alipay/notify). It must be unauthenticated.
+// The gateway expects the literal body "success" (or "failure").
+func (h *OrderHandler) Notify(c *gin.Context) {
+	if err := h.svc.Reconcile(c.Request.Context(), c.Param("platform"), c.Request); err != nil {
 		c.String(http.StatusInternalServerError, "failure")
 		return
 	}
@@ -140,6 +154,7 @@ func toOrderParams(c *gin.Context, req dto.CreateOrderRequest) service.CreateOrd
 		PlanPriceID:      req.PlanPriceID,
 		TrafficPackageID: req.TrafficPackageID,
 		Channel:          channelFromReq(req.Channel, c),
+		Platform:         req.Platform,
 	}
 }
 

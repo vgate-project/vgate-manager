@@ -11,6 +11,10 @@ import (
 	"github.com/vgate-project/vgate-manager/config"
 	"github.com/vgate-project/vgate-manager/internal/api/handler"
 	"github.com/vgate-project/vgate-manager/internal/middleware"
+	"github.com/vgate-project/vgate-manager/internal/payment"
+	"github.com/vgate-project/vgate-manager/internal/payment/alipay"
+	"github.com/vgate-project/vgate-manager/internal/payment/stripe"
+	"github.com/vgate-project/vgate-manager/internal/payment/wechat"
 	"github.com/vgate-project/vgate-manager/internal/service"
 )
 
@@ -67,7 +71,11 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 
 	// Billing (plans + orders + traffic packages) services/handlers.
 	planSvc := service.NewPlanService(db)
-	orderSvc := service.NewOrderService(db, sysCfg)
+	payments := payment.NewRegistry(sysCfg.GetAll)
+	alipay.Register(payments)
+	wechat.Register(payments)
+	stripe.Register(payments)
+	orderSvc := service.NewOrderService(db, sysCfg, payments)
 	planH := handler.NewPlanHandler(planSvc)
 	orderH := handler.NewOrderHandler(orderSvc)
 	trafficPkgSvc := service.NewTrafficPackageService(db)
@@ -92,8 +100,9 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	userRedemptionH := handler.NewUserRedemptionHandler(redemptionSvc)
 	userAnnH := handler.NewUserAnnouncementHandler(annSvc)
 
-	// Public alipay async-notification endpoint (unauthenticated, like /sub).
-	r.POST("/api/v1/billing/alipay/notify", orderH.AlipayNotify)
+	// Public payment-gateway async-notification endpoints (unauthenticated,
+	// like /sub). The platform is the URL segment, e.g. /api/v1/billing/alipay/notify.
+	r.POST("/api/v1/billing/:platform/notify", orderH.Notify)
 
 	// Rate-limit the unauthenticated endpoints (10 req/min/IP) to blunt abuse.
 	loginLimit := middleware.RateLimit(10, 10)
@@ -218,6 +227,13 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		adminAuth.POST("/orders", orderH.AdminCreate)
 		adminAuth.GET("/orders", orderH.List)
 		adminAuth.GET("/orders/:id", orderH.Get)
+		adminAuth.PUT("/orders/:id/status", orderH.AdminUpdateStatus)
+
+		// Products (plans + traffic packages): any admin may view, but only
+		// super admins may create/update/delete (see superAuth group below).
+		adminAuth.GET("/plans/:id", planH.Get)
+		adminAuth.GET("/traffic-packages", trafficPkgH.ListAll)
+		adminAuth.GET("/traffic-packages/:id", trafficPkgH.Get)
 	}
 	superAuth := admin.Group("")
 	superAuth.Use(middleware.RequireSuperAdmin(authSvc))
@@ -229,13 +245,10 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		superAuth.DELETE("/admins/:id", adminAdminH.Delete)
 		superAuth.PUT("/admins/:id/password", adminAdminH.UpdatePassword)
 
-		superAuth.GET("/plans/:id", planH.Get)
 		superAuth.POST("/plans", planH.Create)
 		superAuth.PUT("/plans/:id", planH.Update)
 		superAuth.DELETE("/plans/:id", planH.Delete)
 
-		superAuth.GET("/traffic-packages", trafficPkgH.ListAll)
-		superAuth.GET("/traffic-packages/:id", trafficPkgH.Get)
 		superAuth.POST("/traffic-packages", trafficPkgH.Create)
 		superAuth.PUT("/traffic-packages/:id", trafficPkgH.Update)
 		superAuth.DELETE("/traffic-packages/:id", trafficPkgH.Delete)

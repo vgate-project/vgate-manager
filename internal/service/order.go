@@ -3,16 +3,14 @@ package service
 import (
 	"context"
 	"errors"
-	"net/url"
-	"strconv"
+	"net/http"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/smartwalle/alipay/v3"
 	"gorm.io/gorm"
 
 	"github.com/vgate-project/vgate-manager/internal/model"
+	"github.com/vgate-project/vgate-manager/internal/payment"
 	"github.com/vgate-project/vgate-manager/internal/util"
 )
 
@@ -44,95 +42,64 @@ type CreateOrderParams struct {
 	PlanPriceID      string // required when Kind=plan
 	TrafficPackageID string // required when Kind=traffic
 	Channel          string // optional: "pc" | "wap" | "" (auto by UA)
+	Platform         string // optional: payment gateway; defaults to alipay
 }
 
-// OrderService handles plan/traffic purchases, alipay payment-url generation,
+// OrderService handles plan/traffic purchases, payment-url generation,
 // async notify reconciliation, and expired-order cleanup.
 type OrderService struct {
 	db         *gorm.DB
 	sys        *SystemConfigService
 	planSvc    *PlanService
 	trafficSvc *TrafficPackageService
-
-	// alipay client cache, guarded by mu, keyed by a signature of the config so
-	// it is rebuilt automatically when admin edits the alipay credentials.
-	mu    sync.RWMutex
-	cache *alipay.Client
-	ckey  string
+	payments   *payment.Registry
 }
 
-func NewOrderService(db *gorm.DB, sys *SystemConfigService) *OrderService {
+func NewOrderService(db *gorm.DB, sys *SystemConfigService, payments *payment.Registry) *OrderService {
 	return &OrderService{
 		db:         db,
 		sys:        sys,
 		planSvc:    NewPlanService(db),
 		trafficSvc: NewTrafficPackageService(db),
+		payments:   payments,
 	}
 }
 
-// buildAlipayClient returns an alipay client built from SystemConfig. The
-// client is cached and rebuilt only when the config signature changes.
-func (s *OrderService) buildAlipayClient() (*alipay.Client, AlipayConfig, error) {
-	cfg, err := s.sys.GetAlipayConfig()
-	if err != nil {
-		return nil, cfg, err
-	}
-	if cfg.AppID == "" || cfg.PrivateKey == "" || cfg.PublicKey == "" || cfg.NotifyURL == "" {
-		return nil, cfg, errors.New("alipay is not configured")
-	}
-	key := cfg.AppID + "|" + cfg.PrivateKey + "|" + cfg.PublicKey + "|" + strconv.FormatBool(cfg.Sandbox)
-
-	s.mu.RLock()
-	if s.cache != nil && s.ckey == key {
-		c := s.cache
-		s.mu.RUnlock()
-		return c, cfg, nil
-	}
-	s.mu.RUnlock()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cache != nil && s.ckey == key {
-		return s.cache, cfg, nil
-	}
-	client, err := alipay.New(cfg.AppID, cfg.PrivateKey, !cfg.Sandbox)
-	if err != nil {
-		return nil, cfg, err
-	}
-	if err := client.LoadAliPayPublicKey(cfg.PublicKey); err != nil {
-		return nil, cfg, err
-	}
-	s.cache = client
-	s.ckey = key
-	return client, cfg, nil
-}
-
-// Create builds an order for the given user and returns a payment redirect
-// URL. The amount is taken from the authoritative source (plan price or traffic
-// package); any client-supplied amount is ignored.
-func (s *OrderService) Create(userID string, p CreateOrderParams) (*model.Order, string, error) {
+// Create builds an order for the given user and returns a PayDirective telling
+// the frontend how to collect payment. The amount is taken from the
+// authoritative source (plan price or traffic package); any client-supplied
+// amount is ignored.
+func (s *OrderService) Create(userID string, p CreateOrderParams) (*model.Order, *payment.PayDirective, error) {
 	return s.createFor(userID, p, false)
 }
 
 // AdminCreate is like Create but lets an admin place an order on behalf of any
 // user. adminID is kept for audit only; isAdmin=true relaxes the reset
 // ownership check (an admin intentionally acts for the user).
-func (s *OrderService) AdminCreate(adminID, targetUserID string, p CreateOrderParams) (*model.Order, string, error) {
+func (s *OrderService) AdminCreate(adminID, targetUserID string, p CreateOrderParams) (*model.Order, *payment.PayDirective, error) {
 	return s.createFor(targetUserID, p, true)
 }
 
-func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin bool) (*model.Order, string, error) {
+func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin bool) (*model.Order, *payment.PayDirective, error) {
 	// Disallow a second open order: a user may only have one pending order.
 	var pending int64
 	s.db.Model(&model.Order{}).
 		Where("user_id = ? AND status = ?", userID, model.OrderStatusPending).
 		Count(&pending)
 	if pending > 0 {
-		return nil, "", ErrPendingOrderExists
+		return nil, nil, ErrPendingOrderExists
 	}
 
-	if p.Channel != ChannelWap {
-		p.Channel = ChannelPC
+	platform := p.Platform
+	if platform == "" {
+		platform = model.OrderPlatformAlipay
+	}
+	// The Channel (pc/wap) only selects the alipay redirect style; other
+	// gateways ignore it, so we coerce it to pc/wap only for alipay.
+	if platform == model.OrderPlatformAlipay {
+		if p.Channel != ChannelWap {
+			p.Channel = ChannelPC
+		}
 	}
 
 	order := &model.Order{
@@ -140,6 +107,7 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		UserID:     userID,
 		Kind:       p.Kind,
 		Status:     model.OrderStatusPending,
+		Platform:   platform,
 		OutTradeNo: util.RandomToken(16),
 		Channel:    p.Channel,
 	}
@@ -152,7 +120,7 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 	case model.OrderKindPlan:
 		price, err := s.planSvc.loadEnabledPlanPrice(p.PlanID, p.PlanPriceID)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		order.PlanID = price.PlanID
 		order.PlanPriceID = price.ID
@@ -163,7 +131,7 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 	case model.OrderKindTraffic:
 		pkg, err := s.trafficSvc.loadEnabled(p.TrafficPackageID)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		order.TrafficPackageID = pkg.ID
 		order.ValidityDays = pkg.ValidityDays
@@ -172,105 +140,66 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 	case model.OrderKindReset:
 		plan, err := s.planSvc.loadEnabledPlan(p.PlanID)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		if !plan.ResetEnabled {
-			return nil, "", errors.New("plan has no traffic reset package")
+			return nil, nil, errors.New("plan has no traffic reset package")
 		}
 		// Self-service reset requires the user's active product to be this plan.
 		// Admins creating on a user's behalf skip this ownership check.
 		if !isAdmin {
 			var u model.User
 			if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
-				return nil, "", err
+				return nil, nil, err
 			}
 			if u.CurrentProductID != plan.ID {
-				return nil, "", errors.New("traffic reset is only available for your active plan")
+				return nil, nil, errors.New("traffic reset is only available for your active plan")
 			}
 		}
 		order.PlanID = plan.ID
 		order.Amount = plan.ResetPrice
 		subject = plan.Name + " traffic reset"
 	default:
-		return nil, "", ErrInvalidOrderKind
+		return nil, nil, ErrInvalidOrderKind
 	}
 
 	if err := s.db.Create(order).Error; err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 
-	client, cfg, err := s.buildAlipayClient()
+	prov, err := s.payments.Get(order.Platform)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	payURL, err := s.payURL(client, cfg, order, subject)
+	directive, err := prov.PayURL(order, subject)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	return order, payURL, nil
+	return order, directive, nil
 }
 
-func (s *OrderService) payURL(client *alipay.Client, cfg AlipayConfig, order *model.Order, subject string) (string, error) {
-	if order.Channel == ChannelWap {
-		biz := alipay.TradeWapPay{
-			Trade: alipay.Trade{
-				Subject:        subject,
-				OutTradeNo:     order.OutTradeNo,
-				TotalAmount:    yuan(order.Amount),
-				ProductCode:    "QUICK_WAP_WAY",
-				NotifyURL:      cfg.NotifyURL,
-				ReturnURL:      cfg.ReturnURL,
-				TimeoutExpress: "30m",
-			},
-		}
-		u, err := client.TradeWapPay(biz)
-		if err != nil {
-			return "", err
-		}
-		return u.String(), nil
-	}
-	biz := alipay.TradePagePay{
-		Trade: alipay.Trade{
-			Subject:        subject,
-			OutTradeNo:     order.OutTradeNo,
-			TotalAmount:    yuan(order.Amount),
-			ProductCode:    "FAST_INSTANT_TRADE_PAY",
-			NotifyURL:      cfg.NotifyURL,
-			ReturnURL:      cfg.ReturnURL,
-			TimeoutExpress: "30m",
-		},
-	}
-	u, err := client.TradePagePay(biz)
-	if err != nil {
-		return "", err
-	}
-	return u.String(), nil
-}
-
-// HandleNotify verifies an alipay async notification and, idempotently, marks
-// the order paid and applies the purchase effect (plan: extends ExpireAt, sets
-// quota to the plan amount, sets level; traffic: adds quota, optionally
-// extends ExpireAt).
-// Returning a non-nil error tells the caller to respond "failure" so alipay
-// retries.
-func (s *OrderService) HandleNotify(ctx context.Context, params url.Values) error {
-	client, _, err := s.buildAlipayClient()
+// Reconcile handles an async payment-gateway notification for platform. It
+// verifies the signature via the platform's Provider and, for a successful
+// payment, marks the matching order paid and applies its effect. Returning a
+// non-nil error tells the caller to respond "failure" so the gateway retries.
+func (s *OrderService) Reconcile(ctx context.Context, platform string, r *http.Request) error {
+	prov, err := s.payments.Get(platform)
 	if err != nil {
 		return err
 	}
-	if err := client.VerifySign(ctx, params); err != nil {
+	outTradeNo, tradeNo, paid, err := prov.VerifyNotify(ctx, r)
+	if err != nil {
 		return err
 	}
-
-	outTradeNo := params.Get("out_trade_no")
-	tradeNo := params.Get("trade_no")
-	tradeStatus := params.Get("trade_status")
-	// Only successful payments grant benefits; ignore transient states
-	// (TRADE_CLOSED etc.) so they don't flip the order to paid.
-	if tradeStatus != "TRADE_SUCCESS" && tradeStatus != "TRADE_FINISHED" {
+	if !paid {
 		return nil
 	}
+	return s.markPaid(outTradeNo, tradeNo, platform)
+}
 
+// markPaid flips the pending order identified by outTradeNo to paid
+// (idempotently) and applies its purchase effect inside a single transaction.
+func (s *OrderService) markPaid(outTradeNo, tradeNo, platform string) error {
 	now := time.Now()
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		// Idempotent guard: only the writer that flips pending→paid continues.
@@ -279,9 +208,10 @@ func (s *OrderService) HandleNotify(ctx context.Context, params url.Values) erro
 		res := tx.Model(&model.Order{}).
 			Where("out_trade_no = ? AND status = ?", outTradeNo, model.OrderStatusPending).
 			Updates(map[string]any{
-				"status":          model.OrderStatusPaid,
-				"alipay_trade_no": tradeNo,
-				"paid_at":         &now,
+				"status":   model.OrderStatusPaid,
+				"trade_no": tradeNo,
+				"platform": platform,
+				"paid_at":  &now,
 			})
 		if res.Error != nil {
 			return res.Error
@@ -299,27 +229,26 @@ func (s *OrderService) HandleNotify(ctx context.Context, params url.Values) erro
 			return err
 		}
 
-		if order.Kind == model.OrderKindTraffic {
+		switch order.Kind {
+		case model.OrderKindTraffic:
 			var pkg model.TrafficPackage
 			if err := tx.Where("id = ?", order.TrafficPackageID).First(&pkg).Error; err != nil {
 				return err
 			}
 			return applyTrafficEffect(tx, &user, &pkg, order.ValidityDays)
-		}
-
-		if order.Kind == model.OrderKindReset {
+		case model.OrderKindReset:
 			var plan model.Plan
 			if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
 				return err
 			}
 			return applyResetEffect(tx, &user, &plan)
+		default: // plan
+			var plan model.Plan
+			if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
+				return err
+			}
+			return applyPlanEffect(tx, &user, &plan, order.DurationDays)
 		}
-
-		var plan model.Plan
-		if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
-			return err
-		}
-		return applyPlanEffect(tx, &user, &plan, order.DurationDays)
 	})
 }
 
@@ -485,38 +414,127 @@ func (s *OrderService) CloseMine(id, userID string) error {
 // PayMine regenerates a payment URL for the owner's pending order and returns
 // the order alongside it. Returns ErrOrderNotPending for non-pending orders
 // and a not-found error for orders belonging to another user.
-func (s *OrderService) PayMine(id, userID string) (*model.Order, string, error) {
+func (s *OrderService) PayMine(id, userID string) (*model.Order, *payment.PayDirective, error) {
 	order, err := s.Get(id, userID)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	if order.Status != model.OrderStatusPending {
-		return nil, "", ErrOrderNotPending
+		return nil, nil, ErrOrderNotPending
 	}
 	var subject string
 	switch order.Kind {
 	case model.OrderKindTraffic:
 		pkg, err := s.trafficSvc.Get(order.TrafficPackageID)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		subject = pkg.Name
 	default:
 		price, err := s.planSvc.loadEnabledPlanPrice(order.PlanID, order.PlanPriceID)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		subject = price.Period + " plan"
 	}
-	client, cfg, err := s.buildAlipayClient()
+	prov, err := s.payments.Get(order.Platform)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	payURL, err := s.payURL(client, cfg, order, subject)
+	directive, err := prov.PayURL(order, subject)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	return order, payURL, nil
+	return order, directive, nil
+}
+
+// AdminUpdateStatus lets an admin manually set an order's status. Only a
+// pending order can be changed:
+//   - to "paid":   applies the purchase effect (as a gateway notify would) and
+//     stamps paid_at + a manual trade_no for audit.
+//   - to "closed": cancels the order with no entitlement effect.
+//
+// Paid/closed orders are terminal; re-statusing them returns ErrOrderNotPending.
+func (s *OrderService) AdminUpdateStatus(id, status, adminID string) (*model.Order, error) {
+	now := time.Now()
+	var updated model.Order
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&updated, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if updated.Status != model.OrderStatusPending {
+			return ErrOrderNotPending
+		}
+		if status == model.OrderStatusClosed {
+			if err := tx.Model(&updated).
+				Where("id = ?", id).
+				Update("status", model.OrderStatusClosed).Error; err != nil {
+				return err
+			}
+			updated.Status = model.OrderStatusClosed
+			return nil
+		}
+
+		// status == paid: flip pending→paid (idempotent) then grant the effect.
+		res := tx.Model(&model.Order{}).
+			Where("id = ? AND status = ?", id, model.OrderStatusPending).
+			Updates(map[string]any{
+				"status":   model.OrderStatusPaid,
+				"trade_no": "manual:" + adminID,
+				"platform": model.OrderPlatformManual,
+				"paid_at":  &now,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrOrderNotPending
+		}
+
+		var order model.Order
+		if err := tx.Where("id = ?", id).First(&order).Error; err != nil {
+			return err
+		}
+		var user model.User
+		if err := tx.Where("id = ?", order.UserID).First(&user).Error; err != nil {
+			return err
+		}
+		switch order.Kind {
+		case model.OrderKindTraffic:
+			var pkg model.TrafficPackage
+			if err := tx.Where("id = ?", order.TrafficPackageID).First(&pkg).Error; err != nil {
+				return err
+			}
+			if err := applyTrafficEffect(tx, &user, &pkg, order.ValidityDays); err != nil {
+				return err
+			}
+		case model.OrderKindReset:
+			var plan model.Plan
+			if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
+				return err
+			}
+			if err := applyResetEffect(tx, &user, &plan); err != nil {
+				return err
+			}
+		default: // plan
+			var plan model.Plan
+			if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
+				return err
+			}
+			if err := applyPlanEffect(tx, &user, &plan, order.DurationDays); err != nil {
+				return err
+			}
+		}
+		updated.Status = model.OrderStatusPaid
+		updated.TradeNo = "manual:" + adminID
+		updated.Platform = model.OrderPlatformManual
+		updated.PaidAt = &now
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
 }
 
 // CloseExpired flips timed-out pending orders to closed. It never applies the
@@ -526,10 +544,4 @@ func (s *OrderService) CloseExpired() (int64, error) {
 		Where("status = ? AND expired_at IS NOT NULL AND expired_at < ?", model.OrderStatusPending, time.Now()).
 		Update("status", model.OrderStatusClosed)
 	return res.RowsAffected, res.Error
-}
-
-// yuan formats a cents amount as a yuan string with 2 decimals, as required by
-// alipay's total_amount field.
-func yuan(cents int64) string {
-	return strconv.FormatFloat(float64(cents)/100.0, 'f', 2, 64)
 }

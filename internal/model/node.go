@@ -16,16 +16,16 @@ const NodeOnlineWindow = 5 * time.Minute
 // Transport/security config is stored as JSON columns and materialized into a
 // wire.Config when the node fetches it.
 type Node struct {
-	ID            string          `gorm:"primaryKey;size:26" json:"id"`              // ULID
-	Name          string          `gorm:"size:128;not null" json:"name"`             // display name → share-link tag
-	ParentID      *string         `gorm:"size:26;index" json:"parent_id,omitempty"`  // nil = real node; non-nil = virtual child pointing to parent Node.ID (inherits its transport config)
-	ParentName    string          `gorm:"-" json:"parent_name,omitempty"`            // server-populated display name of ParentID; not persisted
-	Address       string          `gorm:"size:255;not null" json:"address"`          // host:port for share links
-	Port          int             `gorm:"not null" json:"port"`                      // server listen port
-	Token         string          `gorm:"size:64;uniqueIndex;not null" json:"token"` // crypto-random secret
-	Network       string          `gorm:"size:16;default:'tcp'" json:"network"`      // tcp|ws|xhttp
-	Security      string          `gorm:"size:16;not null" json:"security"`          // none|tls|reality
-	Settings      datatypes.JSON  `gorm:"type:json" json:"settings"`                 // transport settings (path, x_padding_bytes, ...)
+	ID            string          `gorm:"primaryKey;size:26" json:"id"`                           // ULID
+	Name          string          `gorm:"size:128;not null;uniqueIndex:uk_node_name" json:"name"` // display name → share-link tag; unique per node
+	ParentID      *string         `gorm:"size:26;index" json:"parent_id,omitempty"`               // nil = real node; non-nil = virtual child pointing to parent Node.ID (inherits its transport config)
+	ParentName    string          `gorm:"-" json:"parent_name,omitempty"`                         // server-populated display name of ParentID; not persisted
+	Address       string          `gorm:"size:255;not null" json:"address"`                       // host:port for share links
+	Port          int             `gorm:"not null" json:"port"`                                   // server listen port
+	Token         string          `gorm:"size:64;uniqueIndex;not null" json:"token"`              // crypto-random secret
+	Network       string          `gorm:"size:16;default:'tcp'" json:"network"`                   // tcp|ws|xhttp
+	Security      string          `gorm:"size:16;not null" json:"security"`                       // none|tls|reality
+	Settings      datatypes.JSON  `gorm:"type:json" json:"settings"`                              // transport settings (path, x_padding_bytes, ...)
 	TLSConfig     *datatypes.JSON `gorm:"type:json" json:"tls_settings,omitempty"`
 	RealityConfig *datatypes.JSON `gorm:"type:json" json:"reality_settings,omitempty"`
 	VLESS         *datatypes.JSON `gorm:"type:json" json:"vless,omitempty"`         // v2 decryption config

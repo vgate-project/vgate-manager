@@ -21,11 +21,20 @@ func NewNodeService(db *gorm.DB) *NodeService {
 	return &NodeService{db: db}
 }
 
-func (s *NodeService) List(page, pageSize int) ([]model.Node, int64, error) {
+// List returns a page of nodes, optionally filtered by type. nodeType is one
+// of "all", "real" (no parent) or "virtual" (has a parent).
+func (s *NodeService) List(page, pageSize int, nodeType string) ([]model.Node, int64, error) {
+	q := s.db.Model(&model.Node{})
+	switch nodeType {
+	case "real":
+		q = q.Where("parent_id IS NULL")
+	case "virtual":
+		q = q.Where("parent_id IS NOT NULL")
+	}
 	var nodes []model.Node
 	var total int64
-	s.db.Model(&model.Node{}).Count(&total)
-	err := s.db.Order("created_at DESC").
+	q.Count(&total)
+	err := q.Order("created_at DESC").
 		Limit(pageSize).Offset((page - 1) * pageSize).
 		Find(&nodes).Error
 	if err != nil {
@@ -161,7 +170,22 @@ func (s *NodeService) Create(node *model.Node) error {
 	if err := validateNode(node); err != nil {
 		return err
 	}
+	if s.nameExists(node.Name, "") {
+		return fmt.Errorf("node name %q already exists", node.Name)
+	}
 	return s.db.Create(node).Error
+}
+
+// nameExists reports whether another node already uses the given name.
+// excludeID is the node being updated (skipped so it doesn't conflict with itself).
+func (s *NodeService) nameExists(name, excludeID string) bool {
+	var count int64
+	q := s.db.Model(&model.Node{}).Where("name = ?", name)
+	if excludeID != "" {
+		q = q.Where("id <> ?", excludeID)
+	}
+	q.Count(&count)
+	return count > 0
 }
 
 // Update saves the full node state (PUT-replace semantics). The caller loads
@@ -169,6 +193,9 @@ func (s *NodeService) Create(node *model.Node) error {
 func (s *NodeService) Update(node *model.Node) error {
 	if err := validateNode(node); err != nil {
 		return err
+	}
+	if s.nameExists(node.Name, node.ID) {
+		return fmt.Errorf("node name %q already exists", node.Name)
 	}
 	return s.db.Save(node).Error
 }

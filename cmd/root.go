@@ -11,6 +11,10 @@ import (
 	"github.com/vgate-project/vgate-manager/config"
 	"github.com/vgate-project/vgate-manager/internal/api"
 	"github.com/vgate-project/vgate-manager/internal/model"
+	"github.com/vgate-project/vgate-manager/internal/payment"
+	"github.com/vgate-project/vgate-manager/internal/payment/alipay"
+	"github.com/vgate-project/vgate-manager/internal/payment/stripe"
+	"github.com/vgate-project/vgate-manager/internal/payment/wechat"
 	"github.com/vgate-project/vgate-manager/internal/service"
 
 	"github.com/glebarez/sqlite"
@@ -124,7 +128,11 @@ func run() {
 	// Periodically close orders that were never paid (alipay also auto-closes,
 	// but this guarantees the local status reflects reality). Safe to re-run:
 	// it only flips pending→closed and never grants benefits.
-	orderSvc := service.NewOrderService(db, sysCfg)
+	payments := payment.NewRegistry(sysCfg.GetAll)
+	alipay.Register(payments)
+	wechat.Register(payments)
+	stripe.Register(payments)
+	orderSvc := service.NewOrderService(db, sysCfg, payments)
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()

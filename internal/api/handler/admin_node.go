@@ -22,7 +22,8 @@ func NewAdminNodeHandler(svc *service.NodeService) *AdminNodeHandler {
 
 func (h *AdminNodeHandler) List(c *gin.Context) {
 	page, pageSize := ParsePaging(c)
-	nodes, total, err := h.svc.List(page, pageSize)
+	nodeType := c.DefaultQuery("type", "all")
+	nodes, total, err := h.svc.List(page, pageSize, nodeType)
 	if writeErr(c, err) {
 		return
 	}
