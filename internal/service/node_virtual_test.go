@@ -49,10 +49,9 @@ func TestVirtualNodeSubscriptionInheritsParent(t *testing.T) {
 	ns := NewNodeService(db)
 	ss := NewSubscriptionService(db)
 
-	tls := datatypes.JSON(`{"server_name":"example.com"}`)
 	parent := &model.Node{
 		Name: "parent", Address: "parent.example.com:8443", Port: 8443,
-		Network: "tcp", Security: "tls", TLSConfig: &tls,
+		Network: "tcp", Security: "tls", TLSConfig: new(datatypes.JSON(`{"server_name":"example.com"}`)),
 		Level: 9, Enabled: true, // high level so only the child is user-visible
 	}
 	if err := ns.Create(parent); err != nil {

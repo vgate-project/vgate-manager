@@ -214,8 +214,7 @@ func TestRedemptionExhaustedAndExpired(t *testing.T) {
 	}
 
 	// Expired.
-	past := time.Now().Add(-time.Hour)
-	exp, err := svc.BatchGenerate(1, dto.AdminGenerateRedemptionRequest{Type: model.RedeemTypeReset, MaxUses: 1, Count: 1, ExpiresAt: &past})
+	exp, err := svc.BatchGenerate(1, dto.AdminGenerateRedemptionRequest{Type: model.RedeemTypeReset, MaxUses: 1, Count: 1, ExpiresAt: new(time.Now().Add(-time.Hour))})
 	if err != nil {
 		t.Fatalf("BatchGenerate expired: %v", err)
 	}

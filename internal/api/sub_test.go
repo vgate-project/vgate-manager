@@ -347,8 +347,8 @@ func TestUserLoginAndSubscribe(t *testing.T) {
 	auth(req)
 	r.ServeHTTP(httptest.NewRecorder(), req)
 
-	// User login.
-	loginBody, _ := json.Marshal(map[string]any{"username": "u2", "password": "secret-pass"})
+	// User login (by email).
+	loginBody, _ := json.Marshal(map[string]any{"email": "u2@example.com", "password": "secret-pass"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/user/login", bytes.NewReader(loginBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
@@ -387,7 +387,7 @@ func TestUserLoginAndSubscribe(t *testing.T) {
 	}
 
 	// Bad password → 401.
-	loginBody, _ = json.Marshal(map[string]any{"username": "u2", "password": "WRONG"})
+	loginBody, _ = json.Marshal(map[string]any{"email": "u2@example.com", "password": "WRONG"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/user/login", bytes.NewReader(loginBody))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(httptest.NewRecorder(), req)
@@ -459,7 +459,7 @@ func TestUserSubscribeFormats(t *testing.T) {
 	}
 
 	// Login.
-	loginBody, _ := json.Marshal(map[string]any{"username": "u3", "password": "secret-pass"})
+	loginBody, _ := json.Marshal(map[string]any{"email": "u3@example.com", "password": "secret-pass"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/user/login", bytes.NewReader(loginBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()

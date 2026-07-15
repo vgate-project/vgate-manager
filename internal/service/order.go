@@ -144,8 +144,7 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		Channel:    p.Channel,
 	}
 	now := time.Now()
-	expireAt := now.Add(orderTimeout)
-	order.ExpiredAt = &expireAt
+	order.ExpiredAt = new(now.Add(orderTimeout))
 
 	var subject string
 
@@ -336,8 +335,7 @@ func applyPlanEffect(tx *gorm.DB, user *model.User, plan *model.Plan, durationDa
 	if user.ExpireAt != nil && user.ExpireAt.After(now) {
 		base = *user.ExpireAt
 	}
-	newExpire := base.AddDate(0, 0, durationDays)
-	user.ExpireAt = &newExpire
+	user.ExpireAt = new(base.AddDate(0, 0, durationDays))
 	user.QuotaBytes = plan.QuotaBytes
 	user.UpTotal = 0
 	user.DownTotal = 0
@@ -365,8 +363,7 @@ func applyTrafficEffect(tx *gorm.DB, user *model.User, pkg *model.TrafficPackage
 		if user.ExpireAt != nil && user.ExpireAt.After(now) {
 			base = *user.ExpireAt
 		}
-		newExpire := base.AddDate(0, 0, validityDays)
-		user.ExpireAt = &newExpire
+		user.ExpireAt = new(base.AddDate(0, 0, validityDays))
 	}
 	return tx.Save(user).Error
 }
@@ -377,10 +374,9 @@ func applyTrafficEffect(tx *gorm.DB, user *model.User, pkg *model.TrafficPackage
 // the usage window so a user who exhausted their plan traffic can continue.
 // Called inside a transaction.
 func applyResetEffect(tx *gorm.DB, user *model.User, plan *model.Plan) error {
-	now := time.Now()
 	user.UpTotal = 0
 	user.DownTotal = 0
-	user.LastResetAt = &now
+	user.LastResetAt = new(time.Now())
 	return tx.Save(user).Error
 }
 

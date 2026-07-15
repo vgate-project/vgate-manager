@@ -25,7 +25,7 @@ func TestUserLoginCarriesLevel(t *testing.T) {
 	user := model.User{
 		ID:           "ulvl-user",
 		Email:        "ulvl@example.com",
-		Username:     ptrStr("ulvl"),
+		Username:     new("ulvl"),
 		Level:        7,
 		PasswordHash: &hash,
 		Enabled:      true,
@@ -36,8 +36,8 @@ func TestUserLoginCarriesLevel(t *testing.T) {
 
 	authSvc := service.NewAuthService(db, "test-secret", time.Hour, time.Hour)
 
-	// Service returns the level.
-	tok, exp, lvl, err := authSvc.UserLogin("ulvl", "secret-pass")
+	// Service returns the level (login by email).
+	tok, exp, lvl, err := authSvc.UserLogin("ulvl@example.com", "secret-pass")
 	if err != nil {
 		t.Fatalf("UserLogin: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestUserLoginCarriesLevel(t *testing.T) {
 	}
 
 	// Login endpoint returns level in the JSON body.
-	loginBody, _ := json.Marshal(map[string]any{"username": "ulvl", "password": "secret-pass"})
+	loginBody, _ := json.Marshal(map[string]any{"email": "ulvl@example.com", "password": "secret-pass"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/user/login", bytes.NewReader(loginBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -78,3 +78,36 @@ func TestUserLoginCarriesLevel(t *testing.T) {
 }
 
 func ptrStr(s string) *string { return &s }
+
+// TestUserLoginEmailCaseInsensitive verifies that the email used to log in is
+// matched case-insensitively. The create path lowercases the stored email, and
+// the login input is lowercased too, so any casing authenticates.
+func TestUserLoginEmailCaseInsensitive(t *testing.T) {
+	db := setupTestDB(t)
+
+	userSvc := service.NewUserService(db, nil)
+	user := model.User{
+		ID:       "ci-user",
+		Email:    "MixedCase@example.com", // the create path lowercases this
+		Username: new("ci"),
+		Level:    0,
+		Enabled:  true,
+	}
+	if err := userSvc.Create(&user, "secret-pass"); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	authSvc := service.NewAuthService(db, "test-secret", time.Hour, time.Hour)
+
+	// Different casings of the email must all authenticate.
+	for _, login := range []string{"mixedcase@example.com", "MIXEDCASE@EXAMPLE.COM", "MixedCase@example.com"} {
+		if _, _, _, err := authSvc.UserLogin(login, "secret-pass"); err != nil {
+			t.Errorf("UserLogin(%q): %v", login, err)
+		}
+	}
+
+	// A wrong password still fails.
+	if _, _, _, err := authSvc.UserLogin("MixedCase@example.com", "wrong"); err == nil {
+		t.Error("UserLogin with wrong password succeeded")
+	}
+}

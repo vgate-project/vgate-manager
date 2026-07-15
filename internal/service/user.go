@@ -113,6 +113,11 @@ func (s *UserService) setDerivedFlags(user *model.User) {
 // credential, and a subscription token. If password is non-empty it is hashed
 // and stored.
 func (s *UserService) Create(user *model.User, password string) error {
+	// Email is the unique account key; store it lowercased for consistent
+	// case-insensitive matching against login/traffic lookups.
+	if user.Email != "" {
+		user.Email = strings.ToLower(strings.TrimSpace(user.Email))
+	}
 	if user.ID == "" {
 		user.ID = util.NewUserID()
 	}
@@ -135,6 +140,10 @@ func (s *UserService) Create(user *model.User, password string) error {
 // Update saves the full user state (PUT-replace). Password is handled by
 // SetPassword, not here.
 func (s *UserService) Update(user *model.User) error {
+	// Normalize the email key on replace, mirroring Create.
+	if user.Email != "" {
+		user.Email = strings.ToLower(strings.TrimSpace(user.Email))
+	}
 	return s.db.Save(user).Error
 }
 

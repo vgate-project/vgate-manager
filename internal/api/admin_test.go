@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/vgate-project/vgate-manager/internal/model"
 	"github.com/vgate-project/vgate-manager/internal/service"
 	"gorm.io/gorm"
 )
@@ -150,5 +151,53 @@ func TestAdminValidation(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("invalid security: expected 400, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestDeleteAdminGuards verifies the DeleteAdmin safety rules: an admin cannot
+// delete their own account, and the last remaining super_admin cannot be
+// deleted (to avoid locking out management).
+func TestDeleteAdminGuards(t *testing.T) {
+	db := setupTestDB(t)
+	authSvc := service.NewAuthService(db, "test-secret", time.Hour, time.Hour)
+
+	self, err := authSvc.CreateAdmin("self", "Passw0rd!", "super_admin")
+	if err != nil {
+		t.Fatalf("create self: %v", err)
+	}
+	other, err := authSvc.CreateAdmin("other", "Passw0rd!", "admin")
+	if err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	// Cannot delete your own account.
+	if err := authSvc.DeleteAdmin(self.ID, self.ID); err == nil {
+		t.Error("expected self-delete to be rejected")
+	}
+	// A non-existent caller must not be able to delete the last super_admin.
+	if err := authSvc.DeleteAdmin(self.ID, 99999); err == nil {
+		t.Error("expected last-super-admin delete to be rejected")
+	}
+	// Deleting another admin is allowed.
+	if err := authSvc.DeleteAdmin(other.ID, self.ID); err != nil {
+		t.Fatalf("delete other: %v", err)
+	}
+
+	// With more than one super_admin, deleting a (non-self) super_admin is fine.
+	sup2, err := authSvc.CreateAdmin("sup2", "Passw0rd!", "super_admin")
+	if err != nil {
+		t.Fatalf("create sup2: %v", err)
+	}
+	if err := authSvc.DeleteAdmin(sup2.ID, self.ID); err != nil {
+		t.Fatalf("delete sup2: %v", err)
+	}
+
+	// Sanity: the seeded admin still exists with the expected role.
+	var got model.Admin
+	if err := db.First(&got, self.ID).Error; err != nil {
+		t.Fatalf("reload self: %v", err)
+	}
+	if got.Role != "super_admin" {
+		t.Errorf("self role = %q, want super_admin", got.Role)
 	}
 }

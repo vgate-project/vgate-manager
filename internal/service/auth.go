@@ -131,6 +131,9 @@ func (a *AuthService) CreateAdmin(username, password, role string) (*model.Admin
 	if role == "" {
 		role = "admin"
 	}
+	if !validAdminRole(role) {
+		return nil, errors.New("invalid role")
+	}
 	hash, err := a.HashPassword(password)
 	if err != nil {
 		return nil, err
@@ -167,6 +170,63 @@ func (a *AuthService) UpdateAdminPassword(id uint, password string) error {
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+// validAdminRole reports whether role is one of the known admin roles.
+func validAdminRole(role string) bool {
+	return role == "super_admin" || role == "admin"
+}
+
+// GetAdmin returns a single admin by id.
+func (a *AuthService) GetAdmin(id uint) (*model.Admin, error) {
+	var admin model.Admin
+	if err := a.db.First(&admin, id).Error; err != nil {
+		return nil, err
+	}
+	return &admin, nil
+}
+
+// UpdateAdmin changes an admin's username and/or role. An empty field is left
+// unchanged. Role, when set, must be a known value.
+func (a *AuthService) UpdateAdmin(id uint, username, role string) (*model.Admin, error) {
+	var admin model.Admin
+	if err := a.db.First(&admin, id).Error; err != nil {
+		return nil, err
+	}
+	if role != "" {
+		if !validAdminRole(role) {
+			return nil, errors.New("invalid role")
+		}
+		admin.Role = role
+	}
+	if username != "" {
+		admin.Username = username
+	}
+	if err := a.db.Save(&admin).Error; err != nil {
+		return nil, err
+	}
+	return &admin, nil
+}
+
+// DeleteAdmin removes an admin. The caller may not delete their own account,
+// and the last remaining super_admin may not be deleted (to avoid locking out
+// management). currentAdminID is the authenticated caller's id.
+func (a *AuthService) DeleteAdmin(id, currentAdminID uint) error {
+	if id == currentAdminID {
+		return errors.New("cannot delete your own account")
+	}
+	var admin model.Admin
+	if err := a.db.First(&admin, id).Error; err != nil {
+		return err
+	}
+	if admin.Role == "super_admin" {
+		var n int64
+		a.db.Model(&model.Admin{}).Where("role = ?", "super_admin").Count(&n)
+		if n <= 1 {
+			return errors.New("cannot delete the last super admin")
+		}
+	}
+	return a.db.Delete(&admin).Error
 }
 
 // ChangeOwnAdminPassword lets an admin rotate their own password. It verifies
@@ -237,11 +297,13 @@ func (a *AuthService) RefreshAdmin(refreshToken string) (string, time.Time, erro
 	return a.issueAdminToken(&admin)
 }
 
-// UserLogin authenticates a user (only if a password is set) and returns an
-// access token plus the user's level. Users do not receive refresh tokens.
-func (a *AuthService) UserLogin(username, password string) (string, time.Time, int, error) {
+// UserLogin authenticates a user by email (only if a password is set) and
+// returns an access token plus the user's level. Users do not receive refresh
+// tokens. The email is normalized to lowercase so login is case-insensitive.
+func (a *AuthService) UserLogin(email, password string) (string, time.Time, int, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
 	var user model.User
-	if err := a.db.Where("username = ?", username).First(&user).Error; err != nil {
+	if err := a.db.Where("email = ?", email).First(&user).Error; err != nil {
 		return "", time.Time{}, 0, errors.New("invalid credentials")
 	}
 	if user.PasswordHash == nil {
@@ -279,6 +341,9 @@ func (a *AuthService) UserLogin(username, password string) (string, time.Time, i
 // (the caller should instruct the user to check their inbox). Otherwise it
 // auto-logs-in and returns a token.
 func (a *AuthService) RegisterUser(username, email, password, inviteCode string) (user *model.User, token string, exp time.Time, pending bool, err error) {
+	// Normalize the email: it is the account's unique key and login identifier,
+	// so store it lowercased for consistent case-insensitive matching.
+	email = strings.ToLower(strings.TrimSpace(email))
 	if a.sysCfg != nil && !a.sysCfg.IsRegisterEnabled() {
 		return nil, "", time.Time{}, false, errors.New("registration is disabled")
 	}
@@ -370,7 +435,7 @@ func (a *AuthService) RegisterUser(username, email, password, inviteCode string)
 	}
 
 	// Auto-login: issue token.
-	token, exp, _, err = a.UserLogin(username, password)
+	token, exp, _, err = a.UserLogin(email, password)
 	if err != nil {
 		return user, "", time.Time{}, false, fmt.Errorf("auto-login failed: %w", err)
 	}
@@ -412,8 +477,7 @@ func (a *AuthService) VerifyEmail(token string) error {
 	}).Error; err != nil {
 		return err
 	}
-	now := time.Now()
-	return a.db.Model(&ev).Update("consumed_at", &now).Error
+	return a.db.Model(&ev).Update("consumed_at", new(time.Now())).Error
 }
 
 func (a *AuthService) IsRegisterEnabled() bool {

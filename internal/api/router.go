@@ -191,8 +191,6 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		adminAuth.GET("/traffic", adminTrafficH.List)
 		adminAuth.GET("/stats/overview", adminStatsH.Overview)
 		adminAuth.POST("/utils/generate-x25519", adminUtilH.GenerateX25519)
-		adminAuth.GET("/system-config", systemH.Get)
-		adminAuth.PUT("/system-config", systemH.Update)
 
 		// Invite codes (admin may mint without quota; list/delete all codes).
 		adminAuth.GET("/invites", adminInviteH.List)
@@ -226,6 +224,9 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	{
 		superAuth.GET("/admins", adminAdminH.List)
 		superAuth.POST("/admins", adminAdminH.Create)
+		superAuth.GET("/admins/:id", adminAdminH.Get)
+		superAuth.PUT("/admins/:id", adminAdminH.Update)
+		superAuth.DELETE("/admins/:id", adminAdminH.Delete)
 		superAuth.PUT("/admins/:id/password", adminAdminH.UpdatePassword)
 
 		superAuth.GET("/plans/:id", planH.Get)
@@ -238,6 +239,10 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		superAuth.POST("/traffic-packages", trafficPkgH.Create)
 		superAuth.PUT("/traffic-packages/:id", trafficPkgH.Update)
 		superAuth.DELETE("/traffic-packages/:id", trafficPkgH.Delete)
+
+		// System config is super-admin only.
+		superAuth.GET("/system-config", systemH.Get)
+		superAuth.PUT("/system-config", systemH.Update)
 	}
 
 	return r

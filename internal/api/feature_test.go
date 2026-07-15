@@ -44,7 +44,7 @@ func loginAsUser(t *testing.T, db *gorm.DB, r *gin.Engine, token string) string 
 		t.Fatalf("set password: %d %s", w.Code, w.Body.String())
 	}
 
-	loginBody, _ := json.Marshal(map[string]string{"username": created["username"].(string), "password": "Passw0rd!"})
+	loginBody, _ := json.Marshal(map[string]string{"email": created["email"].(string), "password": "Passw0rd!"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/user/login", bytes.NewReader(loginBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()

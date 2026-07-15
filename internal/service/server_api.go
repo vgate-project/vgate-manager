@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -154,8 +155,10 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 			down := int64(math.Round(float64(d.Down) * mult))
 			// Look up the user by email (enabled only). Email is a lookup key,
 			// not a secret, so constant-time comparison does not apply here.
+			// Normalize to lowercase so it matches the stored (lower-cased)
+			// email regardless of how the node reports it.
 			var user model.User
-			if err := tx.Select("id").Where("email = ? AND enabled = ?", d.Email, true).First(&user).Error; err != nil {
+			if err := tx.Select("id").Where("email = ? AND enabled = ?", strings.ToLower(strings.TrimSpace(d.Email)), true).First(&user).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					log.Warnf("traffic reported for unknown/disabled email %q on node %s; skipped", d.Email, nodeID)
 					continue

@@ -45,6 +45,13 @@ type UpdatePasswordRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+// UpdateAdminRequest changes an admin's username and/or role. Both fields are
+// optional; an omitted (empty) field is left unchanged by the service.
+type UpdateAdminRequest struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
 // ChangeAdminPasswordRequest is the self-service admin change-password body.
 // The caller must supply their current password; admins always have one set.
 type ChangeAdminPasswordRequest struct {

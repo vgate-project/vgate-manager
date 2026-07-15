@@ -27,8 +27,7 @@ func (h *AdminUserHandler) List(c *gin.Context) {
 		Order:  c.Query("order"),
 	}
 	if v := c.Query("enabled"); v != "" {
-		enabled := strings.EqualFold(v, "true")
-		filter.Enabled = &enabled
+		filter.Enabled = new(strings.EqualFold(v, "true"))
 	}
 	users, total, err := h.svc.List(filter, page, pageSize)
 	if writeErr(c, err) {

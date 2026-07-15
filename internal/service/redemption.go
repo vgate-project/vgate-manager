@@ -254,8 +254,7 @@ func (s *RedemptionService) applyBenefit(tx *gorm.DB, user *model.User, code *mo
 		if user.ExpireAt != nil && user.ExpireAt.After(now) {
 			base = *user.ExpireAt
 		}
-		newExpire := base.AddDate(0, 0, code.DurationDays)
-		user.ExpireAt = &newExpire
+		user.ExpireAt = new(base.AddDate(0, 0, code.DurationDays))
 		user.Enabled = true
 		if err := tx.Save(user).Error; err != nil {
 			return "", err

@@ -29,7 +29,7 @@ func (h *UserAuthHandler) GetConfig(c *gin.Context) {
 	})
 }
 
-// Login serves POST /api/v1/user/login — username/password → JWT.
+// Login serves POST /api/v1/user/login — email/password → JWT.
 func (h *UserAuthHandler) Login(c *gin.Context) {
 	var req dto.UserLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -40,7 +40,7 @@ func (h *UserAuthHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	token, exp, level, err := h.svc.UserLogin(req.Username, req.Password)
+	token, exp, level, err := h.svc.UserLogin(req.Email, req.Password)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return

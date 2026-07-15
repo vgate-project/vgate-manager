@@ -5,8 +5,9 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
-	"github.com/vgate-project/vgate-manager/internal/model"
 	"gorm.io/gorm"
+
+	"github.com/vgate-project/vgate-manager/internal/model"
 )
 
 func testDB(t *testing.T) *gorm.DB {
@@ -60,14 +61,12 @@ func TestApplyPlanEffectSetsLevel(t *testing.T) {
 
 func TestApplyPlanEffectReplacesNotAdds(t *testing.T) {
 	db := testDB(t)
-	now := time.Now()
-	expire := now.Add(10 * 24 * time.Hour)
-	// User already has a 100-byte quota and has consumed 30 bytes
+	now := time.Now() // User already has a 100-byte quota and has consumed 30 bytes
 	// (10 up + 20 down). Buying a 200-byte plan must REPLACE the quota with
 	// 200 (not 300), and must NOT touch the already-consumed traffic.
 	user := model.User{
 		ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "sub-u1", Level: 1,
-		ExpireAt: &expire, QuotaBytes: 100, UpTotal: 10, DownTotal: 20,
+		ExpireAt: new(now.Add(10 * 24 * time.Hour)), QuotaBytes: 100, UpTotal: 10, DownTotal: 20,
 	}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)

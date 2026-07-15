@@ -151,18 +151,26 @@ jobs:
     needs: [prepare, binaries]
     runs-on: ubuntu-latest
     steps:
-      # Only one pre-release per day: remove any existing daily pre-release
-      # (and its tag) so the next step recreates it from the latest commit.
-      # Skipped for formal `v*` releases — those must never be deleted/overwritten.
-      - name: Remove existing daily pre-release if present
+      # The daily pre-release reuses the `pre-YYYY-MM-DD` tag. Rather than
+      # deleting + recreating the release (which leaves the tag pinned to the
+      # *original* commit so the release page shows a stale commit hash), we
+      # force-move the tag to the current commit. `action-gh-release` then
+      # updates the existing release in place with the new artifacts, and the
+      # commit hash on the release page now matches reality.
+      # Skipped for formal `v*` releases — those must never be force-pushed.
+      - name: Checkout (needed to force-move tag)
+        if: needs.prepare.outputs.is_prerelease == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Move daily pre-release tag to current commit
         if: needs.prepare.outputs.is_prerelease == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release delete "$TAG" -y --cleanup-tag
-          fi
+          git tag -f "$TAG" "$GITHUB_SHA"
+          git push -f origin "$TAG"
 
       - name: Download binaries
         uses: actions/download-artifact@v8

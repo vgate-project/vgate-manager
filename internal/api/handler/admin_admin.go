@@ -56,3 +56,53 @@ func (h *AdminAdminHandler) UpdatePassword(c *gin.Context) {
 	}
 	c.Status(http.StatusNoContent)
 }
+
+func (h *AdminAdminHandler) Get(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	admin, err := h.svc.GetAdmin(uint(id))
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, admin)
+}
+
+func (h *AdminAdminHandler) Update(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req dto.UpdateAdminRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	admin, err := h.svc.UpdateAdmin(uint(id), req.Username, req.Role)
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, admin)
+}
+
+// Delete removes an admin. The currently authenticated admin cannot delete
+// their own account (enforced in the service, but also short-circuited here for
+// a clear message); the last remaining super_admin is also protected.
+func (h *AdminAdminHandler) Delete(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if uint(id) == c.GetUint("admin_id") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot delete your own account"})
+		return
+	}
+	if err := h.svc.DeleteAdmin(uint(id), c.GetUint("admin_id")); writeErr(c, err) {
+		return
+	}
+	c.Status(http.StatusNoContent)
+}

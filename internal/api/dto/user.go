@@ -48,7 +48,8 @@ type SetUserNodesRequest struct {
 // --- User auth ---
 
 type UserLoginRequest struct {
-	Username     string `json:"username" binding:"required"`
+	// Login is by email (the unique account key); Username is display-only.
+	Email        string `json:"email" binding:"required"`
 	Password     string `json:"password" binding:"required"`
 	CaptchaToken string `json:"cf_turnstile_response"`
 }

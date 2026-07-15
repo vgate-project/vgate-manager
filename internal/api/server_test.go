@@ -68,7 +68,6 @@ func seedNodeUser(t *testing.T, db *gorm.DB) {
 	rcJSON, _ := json.Marshal(rc)
 	settingsJSON, _ := json.Marshal(map[string]any{"path": "/xhttp"})
 
-	flow := "xtls-rprx-vision"
 	node := model.Node{
 		ID:            testNodeID,
 		Name:          "test-node",
@@ -79,20 +78,19 @@ func seedNodeUser(t *testing.T, db *gorm.DB) {
 		Security:      "reality",
 		Settings:      datatypes.JSON(settingsJSON),
 		RealityConfig: (*datatypes.JSON)(&rcJSON),
-		Flow:          &flow,
+		Flow:          new("xtls-rprx-vision"),
 		Enabled:       true,
 	}
 	if err := db.Create(&node).Error; err != nil {
 		t.Fatalf("seed node: %v", err)
 	}
 
-	expire := time.Now().Add(24 * time.Hour)
 	user := model.User{
 		ID:       testUserID,
 		Email:    testEmail,
 		SubToken: "subtoken123",
 		Level:    1,
-		ExpireAt: &expire,
+		ExpireAt: new(time.Now().Add(24 * time.Hour)),
 		Enabled:  true,
 	}
 	if err := db.Create(&user).Error; err != nil {

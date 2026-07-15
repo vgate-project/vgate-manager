@@ -31,11 +31,10 @@ func newInviteTestDB(t *testing.T) (*gorm.DB, *SystemConfigService) {
 
 func mustUser(t *testing.T, db *gorm.DB) string {
 	t.Helper()
-	username := "user_" + util.RandomToken(4)
 	u := &model.User{
 		ID:         util.NewUserID(),
 		Email:      "u" + util.RandomToken(4) + "@example.com",
-		Username:   &username,
+		Username:   new("user_" + util.RandomToken(4)),
 		SubToken:   util.RandomToken(16),
 		Credential: util.NewCredential(),
 	}
@@ -94,8 +93,7 @@ func TestInviteValidateAndConsume(t *testing.T) {
 func TestInviteExpired(t *testing.T) {
 	db, sysCfg := newInviteTestDB(t)
 	svc := NewInviteService(db, sysCfg)
-	past := time.Now().Add(-time.Hour)
-	code, err := svc.CreateForAdmin(1, 1, &past, "")
+	code, err := svc.CreateForAdmin(1, 1, new(time.Now().Add(-time.Hour)), "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
