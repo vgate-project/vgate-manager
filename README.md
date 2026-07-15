@@ -104,7 +104,7 @@ Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
 - `POST /user/change-password`
 - `GET/POST/DELETE /user/invites`, `GET /user/invites/status`
 - `GET  /user/announcements`
-- `POST /billing/alipay/notify` — Alipay async callback (public, `POST`)
+- `POST /api/v1/billing/:platform/notify` — async payment callback (public, `POST`) for `alipay`, `wechat`, or `stripe`
 
 **Node (data plane)**
 
