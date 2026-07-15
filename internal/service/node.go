@@ -36,7 +36,7 @@ func (s *NodeService) List(page, pageSize int) ([]model.Node, int64, error) {
 	for i := range nodes {
 		ptrs[i] = &nodes[i]
 	}
-	if err := s.hydrateVirtualOnline(ptrs); err != nil {
+	if err := hydrateVirtualOnline(s.db, ptrs); err != nil {
 		return nil, 0, err
 	}
 	if err := s.hydrateParentNames(ptrs); err != nil {
@@ -51,7 +51,7 @@ func (s *NodeService) Get(id string) (*model.Node, error) {
 		return nil, err
 	}
 	if node.ParentID != nil {
-		if err := s.hydrateVirtualOnline([]*model.Node{&node}); err != nil {
+		if err := hydrateVirtualOnline(s.db, []*model.Node{&node}); err != nil {
 			return nil, err
 		}
 		if err := s.hydrateParentNames([]*model.Node{&node}); err != nil {
@@ -106,7 +106,7 @@ func (s *NodeService) hydrateParentNames(nodes []*model.Node) error {
 
 // hydrateVirtualOnline backfills LastSeenAt/Online for virtual child nodes from
 // their parent, since virtual nodes never poll and have no liveness of their own.
-func (s *NodeService) hydrateVirtualOnline(nodes []*model.Node) error {
+func hydrateVirtualOnline(db *gorm.DB, nodes []*model.Node) error {
 	parentIDs := make([]string, 0)
 	for _, n := range nodes {
 		if n.ParentID != nil {
@@ -120,7 +120,7 @@ func (s *NodeService) hydrateVirtualOnline(nodes []*model.Node) error {
 		ID         string     `gorm:"column:id"`
 		LastSeenAt *time.Time `gorm:"column:last_seen_at"`
 	}
-	if err := s.db.Model(&model.Node{}).Select("id", "last_seen_at").
+	if err := db.Model(&model.Node{}).Select("id", "last_seen_at").
 		Where("id IN ?", parentIDs).Find(&parents).Error; err != nil {
 		return err
 	}

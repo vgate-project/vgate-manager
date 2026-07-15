@@ -253,6 +253,48 @@ func TestVirtualNodeOnlineReflectsParent(t *testing.T) {
 	}
 }
 
+// TestVirtualNodeOnlineInUserList verifies that ListNodesForUser derives a
+// virtual child's online state from its parent's last-seen timestamp, not the
+// child's own (always-nil) LastSeenAt. This guards the user-facing
+// GET /api/v1/user/nodes path, which previously reported virtual nodes as
+// permanently offline (regression for missing hydrateVirtualOnline).
+func TestVirtualNodeOnlineInUserList(t *testing.T) {
+	db := vdb(t)
+	ns := NewNodeService(db)
+	us := NewUserService(db, nil)
+
+	parent := &model.Node{
+		Name: "parent", Address: "p:443", Port: 443, Network: "tcp",
+		Security: "none", Level: 0, Enabled: true,
+	}
+	if err := ns.Create(parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	// Mark the parent as just-seen so it (and its child) should read online.
+	if err := db.Model(&model.Node{}).Where("id = ?", parent.ID).
+		Update("last_seen_at", time.Now()).Error; err != nil {
+		t.Fatalf("set last_seen: %v", err)
+	}
+	child := &model.Node{Name: "c", Address: "1.1.1.1", ParentID: &parent.ID, Level: 0, Enabled: true}
+	if err := ns.Create(child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	user := vuser(t, db, "u@example.com", "uuu", 0)
+	nodes, err := us.ListNodesForUser(user.ID)
+	if err != nil {
+		t.Fatalf("ListNodesForUser: %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("want 2 nodes (parent + child), got %d", len(nodes))
+	}
+	for _, n := range nodes {
+		if n.ID == child.ID && !n.IsOnline() {
+			t.Errorf("virtual child IsOnline() = false, want true (parent recently seen)")
+		}
+	}
+}
+
 // TestVirtualNodeValidation verifies virtual-node-specific validation: name and
 // address are required, and a virtual node cannot be the parent of another.
 func TestVirtualNodeValidation(t *testing.T) {

@@ -257,7 +257,21 @@ func (s *UserService) ListNodesForUser(userID string) ([]model.Node, error) {
 		Where("nodes.level <= ? OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = nodes.id AND un.user_id = ? AND un.override = ?)", user.Level, userID, true).
 		Order("nodes.created_at DESC").
 		Find(&nodes).Error
-	return nodes, err
+	if err != nil {
+		return nil, err
+	}
+	// Virtual child nodes never poll, so backfill their liveness from the parent
+	// (mirrors NodeService.List/Get) so the frontend shows the correct online state.
+	if len(nodes) > 0 {
+		ptrs := make([]*model.Node, len(nodes))
+		for i := range nodes {
+			ptrs[i] = &nodes[i]
+		}
+		if err := hydrateVirtualOnline(s.db, ptrs); err != nil {
+			return nil, err
+		}
+	}
+	return nodes, nil
 }
 
 // EffectiveTrafficMultiplier returns the multiplier applied to a node's reported
