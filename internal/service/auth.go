@@ -197,6 +197,15 @@ func (a *AuthService) UpdateAdmin(id uint, username, role string) (*model.Admin,
 		if !validAdminRole(role) {
 			return nil, errors.New("invalid role")
 		}
+		// Demoting the last remaining super_admin would leave zero super admins
+		// and lock out management; refuse it (mirrors DeleteAdmin's guard).
+		if role != "super_admin" && admin.Role == "super_admin" {
+			var n int64
+			a.db.Model(&model.Admin{}).Where("role = ?", "super_admin").Count(&n)
+			if n <= 1 {
+				return nil, errors.New("cannot demote the last super admin")
+			}
+		}
 		admin.Role = role
 	}
 	if username != "" {

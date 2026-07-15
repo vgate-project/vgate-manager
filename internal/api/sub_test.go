@@ -370,8 +370,13 @@ func TestUserLoginAndSubscribe(t *testing.T) {
 	}
 	var profile map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &profile)
-	if profile["email"] != "u2@example.com" || profile["sub_token"] != nil {
-		t.Errorf("profile = %v", profile)
+	if profile["email"] != "u2@example.com" {
+		t.Errorf("profile email = %v, want u2@example.com", profile["email"])
+	}
+	// SubToken is a NOT NULL column generated on user creation, so the profile
+	// must always carry one.
+	if s, _ := profile["sub_token"].(string); s == "" {
+		t.Errorf("profile sub_token missing/empty: %v", profile["sub_token"])
 	}
 
 	// GET /user/subscribe returns empty list (no nodes assigned) — should be 200 empty.
@@ -572,11 +577,16 @@ func TestSubscriptionV2Encryption(t *testing.T) {
 		t.Fatalf("parse link %q: %v", link, err)
 	}
 	q := u.Query()
-	if got := q.Get("encryption"); got != expectedPBK {
-		t.Errorf("encryption = %q, want derived pubkey %q", got, expectedPBK)
+	// v2 (decryption) nodes emit Xray's post-quantum encryption method, which
+	// embeds the derived public key: "mlkem768x25519plus.<xorMode>.0rtt.<pbk>".
+	// The node here has no xor_mode set, so it defaults to "native".
+	expectedEncryption := "mlkem768x25519plus.native.0rtt." + expectedPBK
+	if got := q.Get("encryption"); got != expectedEncryption {
+		t.Errorf("encryption = %q, want %q", got, expectedEncryption)
 	}
-	if got := q.Get("pbk"); got != expectedPBK {
-		t.Errorf("pbk = %q, want derived pubkey %q", got, expectedPBK)
+	// `pbk` is a Reality-only param; a v2 (decryption) node must not emit it.
+	if got := q.Get("pbk"); got != "" {
+		t.Errorf("pbk = %q, want empty for v2 node", got)
 	}
 	if q.Get("encryption") == "v2" {
 		t.Errorf("encryption should not be the literal %q", "v2")

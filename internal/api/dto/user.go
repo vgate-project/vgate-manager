@@ -34,7 +34,7 @@ type SetPasswordRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-// ChangePasswordRequest is the self-service change-password body. OldPassword
+// ChangeUserPasswordRequest is the self-service change-password body. OldPassword
 // may be empty only when the caller has no password set yet (first-time setup).
 type ChangeUserPasswordRequest struct {
 	OldPassword string `json:"old_password"`

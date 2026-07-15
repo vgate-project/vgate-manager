@@ -77,8 +77,6 @@ func TestUserLoginCarriesLevel(t *testing.T) {
 	_ = exp
 }
 
-func ptrStr(s string) *string { return &s }
-
 // TestUserLoginEmailCaseInsensitive verifies that the email used to log in is
 // matched case-insensitively. The create path lowercases the stored email, and
 // the login input is lowercased too, so any casing authenticates.

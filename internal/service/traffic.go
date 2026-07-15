@@ -49,7 +49,7 @@ func (s *TrafficService) List(userID, nodeID string, page, pageSize int) ([]Traf
 	}
 	var total int64
 	q.Count(&total)
-	rows := []TrafficRow{}
+	var rows []TrafficRow
 	err := q.Select("user_node_traffic.user_id, users.email, user_node_traffic.node_id, user_node_traffic.up_total, user_node_traffic.down_total").
 		Order("user_node_traffic.updated_at DESC").
 		Limit(pageSize).Offset((page - 1) * pageSize).
@@ -67,7 +67,7 @@ func (s *TrafficService) ListForUser(userID string, page, pageSize int) ([]UserT
 	}
 	var total int64
 	q.Count(&total)
-	rows := []UserTrafficRow{}
+	var rows []UserTrafficRow
 	err := q.Select("user_node_traffic.node_id, nodes.name as node_name, user_node_traffic.up_total, user_node_traffic.down_total").
 		Order("user_node_traffic.updated_at DESC").
 		Limit(pageSize).Offset((page - 1) * pageSize).

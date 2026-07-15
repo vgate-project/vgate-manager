@@ -55,16 +55,16 @@ Two kinds of settings exist:
 
 **File/env only — require a restart to change:**
 
-| Key | Default | Notes |
-| --- | --- | --- |
-| `server.port` | `8081` | HTTP listener port |
-| `db.dialect` | `sqlite` | `sqlite` \| `postgres` |
-| `db.dsn` | `vgate_manager.db` | SQLite path or Postgres DSN |
-| `db.max_open_conns` | `20` | |
-| `db.max_idle_conns` | `5` | |
-| `jwt.secret` | `change-me-in-production` | **Set this in production** |
-| `admin.bootstrap.username` | `admin` | used only on first run |
-| `admin.bootstrap.password` | `change-me` | used only on first run |
+| Key                        | Default                   | Notes                       |
+|----------------------------|---------------------------|-----------------------------|
+| `server.port`              | `8081`                    | HTTP listener port          |
+| `db.dialect`               | `sqlite`                  | `sqlite` \| `postgres`      |
+| `db.dsn`                   | `vgate_manager.db`        | SQLite path or Postgres DSN |
+| `db.max_open_conns`        | `20`                      |                             |
+| `db.max_idle_conns`        | `5`                       |                             |
+| `jwt.secret`               | `change-me-in-production` | **Set this in production**  |
+| `admin.bootstrap.username` | `admin`                   | used only on first run      |
+| `admin.bootstrap.password` | `change-me`               | used only on first run      |
 
 **Managed in the database (hot-reloadable via `PUT /api/v1/admin/system-config`)**
 — values for these in `config.yml` are **ignored**:

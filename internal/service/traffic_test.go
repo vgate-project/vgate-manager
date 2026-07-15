@@ -5,10 +5,11 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+
 	"github.com/vgate-project/vgate-manager/internal/api/dto"
 	"github.com/vgate-project/vgate-manager/internal/model"
 	"github.com/vgate-project/vgate-manager/internal/wire"
-	"gorm.io/gorm"
 )
 
 func trafficTestDB(t *testing.T) *gorm.DB {

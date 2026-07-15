@@ -14,7 +14,7 @@ import (
 	"io"
 	"net/http"
 
-	stripe "github.com/stripe/stripe-go/v82"
+	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/checkout/session"
 	"github.com/stripe/stripe-go/v82/webhook"
 

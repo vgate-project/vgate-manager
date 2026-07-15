@@ -8,8 +8,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/vgate-project/vgate-manager/internal/util"
 	"gorm.io/gorm"
+
+	"github.com/vgate-project/vgate-manager/internal/util"
 )
 
 // loginAsUser creates a user via the admin API, sets a password, then logs in

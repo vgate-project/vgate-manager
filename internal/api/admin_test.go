@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"github.com/vgate-project/vgate-manager/internal/model"
 	"github.com/vgate-project/vgate-manager/internal/service"
-	"gorm.io/gorm"
 )
 
 // bootstrapAdminAndLogin seeds a super_admin and returns a JWT via POST /admin/login.
