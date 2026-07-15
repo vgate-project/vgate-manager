@@ -86,12 +86,13 @@ func seedNodeUser(t *testing.T, db *gorm.DB) {
 	}
 
 	user := model.User{
-		ID:       testUserID,
-		Email:    testEmail,
-		SubToken: "subtoken123",
-		Level:    1,
-		ExpireAt: new(time.Now().Add(24 * time.Hour)),
-		Enabled:  true,
+		ID:         testUserID,
+		Credential: testUserID, // surfaced as wire.User.ID (the rotatable VLESS credential)
+		Email:      testEmail,
+		SubToken:   "subtoken123",
+		Level:      1,
+		ExpireAt:   new(time.Now().Add(24 * time.Hour)),
+		Enabled:    true,
 	}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("seed user: %v", err)

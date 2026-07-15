@@ -96,7 +96,7 @@ func TestNodeUserLevelGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchUsers high: %v", err)
 	}
-	if len(highUsers) != 1 || highUsers[0].ID != user.ID {
+	if len(highUsers) != 1 || highUsers[0].Email != user.Email {
 		t.Errorf("FetchUsers(%s) expected the user via override, got %v", nHigh.ID, highUsers)
 	}
 
@@ -106,7 +106,7 @@ func TestNodeUserLevelGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchUsers infree: %v", err)
 	}
-	if len(freeUsers) != 1 || freeUsers[0].ID != user.ID {
+	if len(freeUsers) != 1 || freeUsers[0].Email != user.Email {
 		t.Errorf("FetchUsers(%s) expected the user via level tier (no assignment), got %v", nInFree.ID, freeUsers)
 	}
 

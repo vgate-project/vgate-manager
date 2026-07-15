@@ -88,9 +88,11 @@ func TestAdminNodeCRUD(t *testing.T) {
 	if len(list.Items) != 1 {
 		t.Errorf("expected 1 node, got %d", len(list.Items))
 	}
-	// Token must NOT be exposed on list.
-	if list.Items[0]["token"] != nil {
-		t.Errorf("token leaked on list: %v", list.Items[0]["token"])
+	// The node token is intentionally exposed on every node payload (the admin
+	// console reads it to display/copy the token and build node config), so it
+	// must be present on list.
+	if list.Items[0]["token"] == nil {
+		t.Errorf("token missing on list")
 	}
 
 	// Get.

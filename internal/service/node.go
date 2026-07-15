@@ -268,7 +268,7 @@ func validateNode(node *model.Node) error {
 	}
 	// flow cannot be set when security is none
 	if node.Security == "none" && node.Flow != nil && *node.Flow != "" {
-		return errors.New("flow cannot be set when security is none")
+		return errors.New("invalid flow: cannot be set when security is none")
 	}
 	// flow can only be used with tcp network
 	if node.Flow != nil && *node.Flow != "" && node.Network != "tcp" && node.Network != "" {
