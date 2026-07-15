@@ -27,4 +27,3 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
     CMD wget -qO- http://localhost:8081/health || exit 1
 
 ENTRYPOINT ["/app/vgate-manager"]
-CMD ["--config", "/app/config.yml"]
