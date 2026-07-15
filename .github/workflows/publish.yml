@@ -178,13 +178,46 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Create GitHub release
+      - name: Check if daily pre-release already exists
+        id: rel
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            gh release view "$TAG" --json body -q .body > notes.md
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            : > notes.md
+          fi
+
+      # First push of the day (or a new formal v* release): let GitHub generate
+      # the notes exactly once. This is the only moment a "Full Changelog" link
+      # is produced.
+      - name: Create GitHub release (first time)
+        if: steps.rel.outputs.exists == 'false'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ${{ needs.prepare.outputs.release_name }}
           prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+
+      # Later pushes on the same day: reuse the notes captured above so the
+      # "Full Changelog" link is NOT regenerated.
+      - name: Update GitHub release (keep notes)
+        if: steps.rel.outputs.exists == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.release_name }}
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+          generate_release_notes: false
+          body_path: notes.md
           files: |
             dist/*.tar.gz
             dist/*.zip
