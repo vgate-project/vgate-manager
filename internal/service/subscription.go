@@ -314,7 +314,7 @@ func (p *proxySpec) toVLESSURL() (string, error) {
 // origins, no path); when non-empty one is chosen at random, otherwise the
 // provided fallback (typically the request origin) is used. The returned URL
 // points at the public subscription endpoint and base64URL appends the
-// "?fmt=base64" query used by QR codes / v2ray-compatible clients.
+// "?type=v2rayn" query used by QR codes / v2ray-compatible clients.
 func (s *SubscriptionService) SubscribeURL(subToken string, baseURLs []string, fallback string) (subURL, base64URL string) {
 	base := fallback
 	if len(baseURLs) > 0 {
@@ -322,7 +322,7 @@ func (s *SubscriptionService) SubscribeURL(subToken string, baseURLs []string, f
 	}
 	base = strings.TrimRight(base, "/")
 	subURL = base + "/api/v1/sub/" + subToken
-	return subURL, subURL + "?fmt=base64"
+	return subURL, subURL + "?type=v2rayn"
 }
 
 // Render produces the subscription payload for a specific client type.

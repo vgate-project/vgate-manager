@@ -94,9 +94,8 @@ func writeETaggedJSON(c *gin.Context, data any) {
 
 // detectClientType resolves which subscription format to serve. Precedence:
 //  1. explicit ?type= query param (clash|v2rayn|raw|base64|surge)
-//  2. legacy ?fmt=base64 (kept for backward compatibility → v2rayn)
-//  3. User-Agent sniffing for common clients
-//  4. "raw" plaintext default (preserves the original no-param behavior)
+//  2. User-Agent sniffing for common clients
+//  3. "raw" plaintext default (preserves the original no-param behavior)
 //
 // Surge is unsupported (no VLESS) and falls back to v2rayn. Unknown values fall
 // back to "raw" so a stray ?type= never silently switches to base64.
@@ -114,10 +113,6 @@ func detectClientType(c *gin.Context) string {
 		default:
 			return "raw"
 		}
-	}
-	// Legacy alias: the endpoint historically used ?fmt=base64.
-	if strings.ToLower(c.Query("fmt")) == "base64" {
-		return "v2rayn"
 	}
 	ua := strings.ToLower(c.GetHeader("User-Agent"))
 	switch {

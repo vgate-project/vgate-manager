@@ -363,7 +363,8 @@ func (s *TelegramService) userCommandsText() string {
 	return "Here are the commands you can use:\n" +
 		"/status - show your traffic, quota and expiry\n" +
 		"/sub - get your subscription link\n" +
-		"/unbind - unlink this Telegram account"
+		"/unbind - unlink this Telegram account\n" +
+		"/help - show help message"
 }
 
 // handleHelp shows the public command list to unbound or bound users.
@@ -372,7 +373,8 @@ func (s *TelegramService) handleHelp(c tb.Context) error {
 		"Link your account from the user portal, then use:\n" +
 		"/status - show your traffic, quota and expiry\n" +
 		"/sub - get your subscription link\n" +
-		"/unbind - unlink this Telegram account"
+		"/unbind - unlink this Telegram account\n" +
+		"/help - show this message"
 	return c.Send(help)
 }
 
@@ -409,7 +411,7 @@ func (s *TelegramService) handleSub(c tb.Context) error {
 	}
 	baseURLs, _ := s.sysCfg.GetSubBaseURLs()
 	subURL, base64URL := s.subSvc.SubscribeURL(u.SubToken, baseURLs, "")
-	text := fmt.Sprintf("Subscription link:\n%s\n\nClash / v2ray base64:\n%s", subURL, base64URL)
+	text := fmt.Sprintf("Subscription link:\n%s\n\nv2ray base64:\n%s", subURL, base64URL)
 	return c.Send(text)
 }
 

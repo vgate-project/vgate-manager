@@ -110,18 +110,6 @@ func TestSubscriptionLink(t *testing.T) {
 		t.Errorf("fragment = %q, want hk-1", u.Fragment)
 	}
 
-	// Base64 format decodes to the same list.
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/sub/"+subToken+"?fmt=base64", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(w.Body.String()))
-	if err != nil {
-		t.Fatalf("base64 decode: %v", err)
-	}
-	if strings.TrimSpace(string(decoded)) != link {
-		t.Errorf("base64 mismatch: %q vs %q", string(decoded), link)
-	}
-
 	// ?type=v2rayn explicit → base64 of the same link.
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/sub/"+subToken+"?type=v2rayn", nil)
 	w = httptest.NewRecorder()

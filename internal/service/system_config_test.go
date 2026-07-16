@@ -78,7 +78,7 @@ func TestSubscriptionService_SubscribeURL(t *testing.T) {
 	if url != "https://sub.example.com/api/v1/sub/tok123" {
 		t.Fatalf("unexpected url: %q", url)
 	}
-	if b64 != "https://sub.example.com/api/v1/sub/tok123?fmt=base64" {
+	if b64 != "https://sub.example.com/api/v1/sub/tok123?type=v2rayn" {
 		t.Fatalf("unexpected base64 url: %q", b64)
 	}
 
