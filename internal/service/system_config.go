@@ -95,8 +95,10 @@ const (
 	CfgKeyTelegramBotUsername = "telegram.bot_username" // bot @username, used for deep links
 	// CfgKeyTelegramAdminChatIDs is the JSON array of chat IDs that receive
 	// admin alerts and are permitted to issue remote-control commands. Group /
-	// channel IDs are negative integers.
-	CfgKeyTelegramAdminChatIDs   = "telegram.admin_chat_ids"   // JSON array of int64
+	// channel IDs are negative integers. Stored as a JSON array of numbers
+	// (e.g. [123,-456]) or numeric strings (e.g. ["123","-456"]) — the admin
+	// UI's tags input emits the latter, so the parser accepts both.
+	CfgKeyTelegramAdminChatIDs   = "telegram.admin_chat_ids"   // JSON array of int64 (or numeric strings)
 	CfgKeyTelegramUserBotEnabled = "telegram.user_bot_enabled" // "true" | "false" — user self-service
 
 	// Per-event alert toggles. Each admin alert is independently enableable so
@@ -427,10 +429,30 @@ func (s *SystemConfigService) GetTelegramConfig() (TelegramConfig, error) {
 		AlertAnnouncement: m[CfgKeyAlertAnnouncement] == "true",
 	}
 	if v, ok := m[CfgKeyTelegramAdminChatIDs]; ok && v != "" {
-		var ids []int64
-		if err := json.Unmarshal([]byte(v), &ids); err != nil {
-			log.Warnf("system-config: invalid %s, ignored: %v", CfgKeyTelegramAdminChatIDs, err)
+		// The admin UI's tags input stores the value as a JSON array of
+		// strings (e.g. ["123","-456"]), while a hand-edited config may use a
+		// JSON array of numbers (e.g. [123,-456]). Accept both: unmarshal into
+		// a string slice and convert each element to int64, skipping any entry
+		// that is not a valid integer rather than dropping the whole list.
+		var raw []string
+		if err := json.Unmarshal([]byte(v), &raw); err != nil {
+			// Not an array of strings — try a plain array of numbers.
+			var nums []int64
+			if e2 := json.Unmarshal([]byte(v), &nums); e2 != nil {
+				log.Warnf("system-config: invalid %s, ignored: %v", CfgKeyTelegramAdminChatIDs, err)
+			} else {
+				cfg.AdminChatIDs = nums
+			}
 		} else {
+			ids := make([]int64, 0, len(raw))
+			for _, s := range raw {
+				n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+				if err != nil {
+					log.Warnf("system-config: skipping invalid %s entry %q: %v", CfgKeyTelegramAdminChatIDs, s, err)
+					continue
+				}
+				ids = append(ids, n)
+			}
 			cfg.AdminChatIDs = ids
 		}
 	}
