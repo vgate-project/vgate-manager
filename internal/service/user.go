@@ -137,6 +137,40 @@ func (s *UserService) Create(user *model.User, password string) error {
 	return s.db.Create(user).Error
 }
 
+// UpdateUsername lets the caller rename themselves, enforcing the unique
+// index on the username column (excluding their own current row).
+func (s *UserService) UpdateUsername(userID, username string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return errors.New("username cannot be empty")
+	}
+	var u model.User
+	if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
+		return err
+	}
+	// No change → skip the DB write entirely.
+	if u.Username != nil && *u.Username == username {
+		return nil
+	}
+	var count int64
+	if err := s.db.Model(&model.User{}).
+		Where("username = ? AND id <> ?", username, userID).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return errors.New("username already exists")
+	}
+	res := s.db.Model(&model.User{}).Where("id = ?", userID).Update("username", username)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 // Update saves the full user state (PUT-replace). Password is handled by
 // SetPassword, not here.
 func (s *UserService) Update(user *model.User) error {

@@ -50,3 +50,17 @@ type AdminSendEmailRequest struct {
 	CreateAnnouncement bool     `json:"create_announcement"`
 	Pinned             bool     `json:"pinned"`
 }
+
+// --- Telegram (admin) ---
+
+// AdminTelegramBroadcastRequest is the body for the admin Telegram broadcast
+// action. Message is delivered to every linked, opted-in user; when
+// CreateAnnouncement is true the same content is also persisted as a user
+// announcement (and pushed to Telegram via the announcement hook, so it is not
+// re-sent here). Title is only used when CreateAnnouncement is true.
+type AdminTelegramBroadcastRequest struct {
+	Message            string `json:"message" binding:"required"`
+	CreateAnnouncement bool   `json:"create_announcement"`
+	Title              string `json:"title"`
+	Pinned             bool   `json:"pinned"`
+}

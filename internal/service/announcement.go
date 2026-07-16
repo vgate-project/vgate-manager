@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 
 	"gorm.io/gorm"
 
@@ -14,11 +15,19 @@ import (
 // regardless of active state; users only see active ones (and pinned ones
 // sort first).
 type AnnouncementService struct {
-	db *gorm.DB
+	db          *gorm.DB
+	telegramSvc *TelegramService
 }
 
 func NewAnnouncementService(db *gorm.DB) *AnnouncementService {
 	return &AnnouncementService{db: db}
+}
+
+// SetTelegramService wires the Telegram bot service so a newly created
+// announcement can be broadcast to opted-in users (when the admin enabled the
+// announcement alert).
+func (s *AnnouncementService) SetTelegramService(svc *TelegramService) {
+	s.telegramSvc = svc
 }
 
 // Create persists a new announcement authored by the given admin.
@@ -36,6 +45,11 @@ func (s *AnnouncementService) Create(title, content string, pinned, active bool,
 	}
 	if err := s.db.Create(a).Error; err != nil {
 		return nil, err
+	}
+	// Best-effort Telegram broadcast: when the admin enabled announcement
+	// alerts, push the new announcement to opted-in users.
+	if s.telegramSvc != nil {
+		s.telegramSvc.BroadcastToUsers(fmt.Sprintf("%s\n\n%s", title, content))
 	}
 	return a, nil
 }

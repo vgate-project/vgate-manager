@@ -84,6 +84,29 @@ const (
 	// user subscription link is built from a random entry; when empty the
 	// request origin is used as the fallback. Stored as a JSON array string.
 	CfgKeySubBaseURLs = "sub.base_urls"
+
+	// Telegram bot config keys. All settings are stored as SystemConfig rows so
+	// an admin can configure the bot at runtime without restarting. The bot
+	// token is the only secret here and is stored in plaintext at the same
+	// trust level as alipay.private_key / email.smtp_pass (self-hosted,
+	// single-tenant).
+	CfgKeyTelegramEnabled     = "telegram.enabled"      // "true" | "false" — master switch
+	CfgKeyTelegramBotToken    = "telegram.bot_token"    // BotFather token (secret)
+	CfgKeyTelegramBotUsername = "telegram.bot_username" // bot @username, used for deep links
+	// CfgKeyTelegramAdminChatIDs is the JSON array of chat IDs that receive
+	// admin alerts and are permitted to issue remote-control commands. Group /
+	// channel IDs are negative integers.
+	CfgKeyTelegramAdminChatIDs   = "telegram.admin_chat_ids"   // JSON array of int64
+	CfgKeyTelegramUserBotEnabled = "telegram.user_bot_enabled" // "true" | "false" — user self-service
+
+	// Per-event alert toggles. Each admin alert is independently enableable so
+	// an operator can opt into exactly the notifications they want.
+	CfgKeyAlertNewRegistration = "telegram.alert_new_registration"
+	CfgKeyAlertOrderPaid       = "telegram.alert_order_paid"
+	CfgKeyAlertNodeUp          = "telegram.alert_node_up"
+	CfgKeyAlertNodeDown        = "telegram.alert_node_down"
+	CfgKeyAlertTrafficExceeded = "telegram.alert_traffic_exceeded"
+	CfgKeyAlertAnnouncement    = "telegram.alert_announcement"
 )
 
 type SystemConfigService struct {
@@ -366,6 +389,54 @@ func (s *SystemConfigService) GetSubBaseURLs() ([]string, error) {
 	return out, nil
 }
 
+// TelegramConfig is the resolved Telegram bot configuration sourced from
+// SystemConfig. The BotToken is the only secret and is stored in plaintext at
+// the same trust level as alipay.private_key / email.smtp_pass.
+type TelegramConfig struct {
+	Enabled           bool
+	BotToken          string
+	BotUsername       string
+	AdminChatIDs      []int64
+	UserBotEnabled    bool
+	AlertNewReg       bool
+	AlertOrderPaid    bool
+	AlertNodeUp       bool
+	AlertNodeDown     bool
+	AlertTraffic      bool
+	AlertAnnouncement bool
+}
+
+// GetTelegramConfig reads the Telegram bot settings from SystemConfig. Missing
+// keys fall back to the disabled/default values, so the bot stays off until an
+// admin explicitly enables it and supplies a token.
+func (s *SystemConfigService) GetTelegramConfig() (TelegramConfig, error) {
+	m, err := s.GetAll()
+	if err != nil {
+		return TelegramConfig{}, err
+	}
+	cfg := TelegramConfig{
+		Enabled:           m[CfgKeyTelegramEnabled] == "true",
+		BotToken:          m[CfgKeyTelegramBotToken],
+		BotUsername:       m[CfgKeyTelegramBotUsername],
+		UserBotEnabled:    m[CfgKeyTelegramUserBotEnabled] == "true",
+		AlertNewReg:       m[CfgKeyAlertNewRegistration] == "true",
+		AlertOrderPaid:    m[CfgKeyAlertOrderPaid] == "true",
+		AlertNodeUp:       m[CfgKeyAlertNodeUp] == "true",
+		AlertNodeDown:     m[CfgKeyAlertNodeDown] == "true",
+		AlertTraffic:      m[CfgKeyAlertTrafficExceeded] == "true",
+		AlertAnnouncement: m[CfgKeyAlertAnnouncement] == "true",
+	}
+	if v, ok := m[CfgKeyTelegramAdminChatIDs]; ok && v != "" {
+		var ids []int64
+		if err := json.Unmarshal([]byte(v), &ids); err != nil {
+			log.Warnf("system-config: invalid %s, ignored: %v", CfgKeyTelegramAdminChatIDs, err)
+		} else {
+			cfg.AdminChatIDs = ids
+		}
+	}
+	return cfg, nil
+}
+
 // defaultConfigRows returns the migrated (DB-backed) runtime-config keys and
 // their hardcoded default values, sourced from config.DefaultConfig(). Only
 // these hot-reloadable keys are eligible to be written into the database;
@@ -406,6 +477,17 @@ func (s *SystemConfigService) defaultConfigRows() map[string]string {
 		CfgKeyCaptchaTurnstileSiteKey:    "",
 		CfgKeyCaptchaTurnstileSecretKey:  "",
 		CfgKeySubBaseURLs:                "[]",
+		CfgKeyTelegramEnabled:            "false",
+		CfgKeyTelegramBotToken:           "",
+		CfgKeyTelegramBotUsername:        "",
+		CfgKeyTelegramAdminChatIDs:       "[]",
+		CfgKeyTelegramUserBotEnabled:     "false",
+		CfgKeyAlertNewRegistration:       "false",
+		CfgKeyAlertOrderPaid:             "false",
+		CfgKeyAlertNodeUp:                "false",
+		CfgKeyAlertNodeDown:              "false",
+		CfgKeyAlertTrafficExceeded:       "false",
+		CfgKeyAlertAnnouncement:          "false",
 	}
 }
 

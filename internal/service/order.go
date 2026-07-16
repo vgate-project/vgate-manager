@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -48,11 +49,12 @@ type CreateOrderParams struct {
 // OrderService handles plan/traffic purchases, payment-url generation,
 // async notify reconciliation, and expired-order cleanup.
 type OrderService struct {
-	db         *gorm.DB
-	sys        *SystemConfigService
-	planSvc    *PlanService
-	trafficSvc *TrafficPackageService
-	payments   *payment.Registry
+	db          *gorm.DB
+	sys         *SystemConfigService
+	planSvc     *PlanService
+	trafficSvc  *TrafficPackageService
+	payments    *payment.Registry
+	telegramSvc *TelegramService
 }
 
 func NewOrderService(db *gorm.DB, sys *SystemConfigService, payments *payment.Registry) *OrderService {
@@ -63,6 +65,12 @@ func NewOrderService(db *gorm.DB, sys *SystemConfigService, payments *payment.Re
 		trafficSvc: NewTrafficPackageService(db),
 		payments:   payments,
 	}
+}
+
+// SetTelegramService wires the Telegram bot service so a paid order can emit
+// an admin alert (when the admin enabled the order_paid alert).
+func (s *OrderService) SetTelegramService(svc *TelegramService) {
+	s.telegramSvc = svc
 }
 
 // Create builds an order for the given user and returns a PayDirective telling
@@ -194,7 +202,15 @@ func (s *OrderService) Reconcile(ctx context.Context, platform string, r *http.R
 	if !paid {
 		return nil
 	}
-	return s.markPaid(outTradeNo, tradeNo, platform)
+	if err := s.markPaid(outTradeNo, tradeNo, platform); err != nil {
+		return err
+	}
+	// Best-effort admin alert once the payment is applied.
+	var o model.Order
+	if err := s.db.Where("out_trade_no = ?", outTradeNo).First(&o).Error; err == nil {
+		s.alertOrderPaid(&o)
+	}
+	return nil
 }
 
 // markPaid flips the pending order identified by outTradeNo to paid
@@ -250,6 +266,16 @@ func (s *OrderService) markPaid(outTradeNo, tradeNo, platform string) error {
 			return applyPlanEffect(tx, &user, &plan, order.DurationDays)
 		}
 	})
+}
+
+// alertOrderPaid emits the admin "order paid" alert outside the transaction
+// once the purchase effect has been applied. It is best-effort.
+func (s *OrderService) alertOrderPaid(order *model.Order) {
+	if s.telegramSvc == nil {
+		return
+	}
+	s.telegramSvc.NotifyAdminEvent(CfgKeyAlertOrderPaid,
+		fmt.Sprintf("Order paid: user %s, amount %d (%s)", order.UserID, order.Amount, order.Kind))
 }
 
 // applyPlanEffect extends the user's expiry from the later of now/existing
@@ -534,6 +560,8 @@ func (s *OrderService) AdminUpdateStatus(id, status, adminID string) (*model.Ord
 	if err != nil {
 		return nil, err
 	}
+	// Best-effort admin alert once the manual payment is applied.
+	s.alertOrderPaid(&updated)
 	return &updated, nil
 }
 

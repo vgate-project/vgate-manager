@@ -30,6 +30,21 @@ func (h *UserHandler) Profile(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
+// UpdateProfile serves PUT /api/v1/user/profile — the caller edits their own
+// profile (currently just the display username).
+func (h *UserHandler) UpdateProfile(c *gin.Context) {
+	var req dto.UpdateProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.userSvc.UpdateUsername(c.GetString("user_id"), *req.Username); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // Subscribe serves GET /api/v1/user/subscribe — same payload as /sub/:sub_token
 // but authenticated by JWT rather than the subscription token. Format is chosen
 // by ?type= or User-Agent, identical to the public subscription endpoint.

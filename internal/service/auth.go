@@ -34,11 +34,12 @@ type AuthService struct {
 	// accessTTL/refreshTTL are the config.yml defaults, used when no
 	// SystemConfigService is wired (e.g. the `admin create` CLI) or when the
 	// DB read fails. Runtime overrides come from the system_configs table.
-	accessTTL  time.Duration
-	refreshTTL time.Duration
-	sysCfg     *SystemConfigService
-	inviteSvc  *InviteService
-	emailSvc   *EmailService
+	accessTTL   time.Duration
+	refreshTTL  time.Duration
+	sysCfg      *SystemConfigService
+	inviteSvc   *InviteService
+	emailSvc    *EmailService
+	telegramSvc *TelegramService
 }
 
 func NewAuthService(db *gorm.DB, secret string, accessTTL, refreshTTL time.Duration) *AuthService {
@@ -61,6 +62,12 @@ func (a *AuthService) SetInviteService(svc *InviteService) {
 // verification mail when email verification is required.
 func (a *AuthService) SetEmailService(svc *EmailService) {
 	a.emailSvc = svc
+}
+
+// SetTelegramService wires the Telegram bot service so registration can emit
+// an admin alert (when the admin enabled the new_registration alert).
+func (a *AuthService) SetTelegramService(svc *TelegramService) {
+	a.telegramSvc = svc
 }
 
 // ttl returns the effective access/refresh TTLs, preferring DB overrides and
@@ -416,6 +423,17 @@ func (a *AuthService) RegisterUser(username, email, password, inviteCode string)
 
 	if err = a.db.Create(user).Error; err != nil {
 		return nil, "", time.Time{}, false, err
+	}
+
+	// Best-effort admin alert: notify on a new registration when the admin
+	// enabled the new_registration alert. The bot service swallows errors.
+	if a.telegramSvc != nil {
+		source := "open"
+		if a.sysCfg != nil && a.sysCfg.IsRegisterRequireInvite() {
+			source = "invite"
+		}
+		a.telegramSvc.NotifyAdminEvent(CfgKeyAlertNewRegistration,
+			fmt.Sprintf("New user registered: %s (via %s)", email, source))
 	}
 
 	// Email verification required → hold the account and email a link.

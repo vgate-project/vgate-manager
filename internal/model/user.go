@@ -54,7 +54,18 @@ type User struct {
 	// MaxInvites caps how many successful registrations this user may sponsor
 	// via invite codes they generate. 0 means "use the global default"
 	// (system_config invite.default_user_quota). Admin-set overrides apply.
-	MaxInvites int       `gorm:"default:0" json:"max_invites"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	MaxInvites int `gorm:"default:0" json:"max_invites"`
+	// Telegram integration fields. TelegramID is the chat id of the user's
+	// linked Telegram account (0 = not linked). TelegramNotify gates
+	// announcement broadcasts; it defaults to true once linked so the user
+	// receives announcements unless they opt out. The bind token is a
+	// one-time code (with expiry) exchanged via /start <code> to link the
+	// account; both are cleared after a successful bind.
+	TelegramID            int64      `gorm:"index" json:"telegram_id"`
+	TelegramBoundAt       *time.Time `json:"telegram_bound_at,omitempty"`
+	TelegramNotify        bool       `gorm:"default:true" json:"telegram_notify"`
+	TelegramBindToken     string     `gorm:"size:32;index" json:"-"`
+	TelegramBindExpiresAt *time.Time `json:"-"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }

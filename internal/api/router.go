@@ -95,6 +95,19 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	authSvc.SetInviteService(inviteSvc)
 	authSvc.SetEmailService(emailSvc)
 
+	// TelegramService is the bot. It is constructed here (after userSvc /
+	// annSvc / orderSvc / subSvc exist) with the node / stats services
+	// injected a moment later via SetNodeService / SetStatsService (they
+	// are created in the admin section below). It is wired back into the
+	// services that emit admin alerts, and its user link handler is
+	// registered into the userProtected group below.
+	telegramSvc := service.NewTelegramService(db, sysCfg, userSvc, annSvc, orderSvc, nil, nil, subSvc)
+	authSvc.SetTelegramService(telegramSvc)
+	orderSvc.SetTelegramService(telegramSvc)
+	annSvc.SetTelegramService(telegramSvc)
+	telegramUserH := handler.NewTelegramUserHandler(telegramSvc)
+	telegramSvc.Run()
+
 	// User-facing invite + announcement handlers (used in the userProtected group).
 	userInviteH := handler.NewUserInviteHandler(inviteSvc)
 	userRedemptionH := handler.NewUserRedemptionHandler(redemptionSvc)
@@ -115,6 +128,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	userProtected.Use(middleware.RequireUser(authSvc))
 	{
 		userProtected.GET("/profile", userH.Profile)
+		userProtected.PUT("/profile", userH.UpdateProfile)
 		userProtected.GET("/subscribe", userH.Subscribe)
 		userProtected.GET("/subscribe-url", userH.SubscribeURL)
 		userProtected.GET("/nodes", userH.Nodes)
@@ -146,11 +160,25 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 
 		// Active announcements for the user SPA.
 		userProtected.GET("/announcements", userAnnH.List)
+
+		// Telegram link management: status, one-time bind code, unlink,
+		// and announcement opt-in toggle.
+		userProtected.GET("/telegram/status", telegramUserH.Status)
+		userProtected.POST("/telegram/bind", telegramUserH.Bind)
+		userProtected.POST("/telegram/unbind", telegramUserH.Unbind)
+		userProtected.PUT("/telegram/notify", telegramUserH.SetNotify)
 	}
 
 	// Admin API.
 	nodeSvc := service.NewNodeService(db)
 	statsSvc := service.NewStatsService(db)
+
+	// Inject the node / stats services into the Telegram bot now that
+	// they exist; its /anodes and /astats commands need them. (The
+	// bot lifecycle was already started above; this only supplies deps.)
+	telegramSvc.SetNodeService(nodeSvc)
+	telegramSvc.SetStatsService(statsSvc)
+
 	adminAuthH := handler.NewAdminAuthHandler(authSvc, captchaSvc)
 	adminNodeH := handler.NewAdminNodeHandler(nodeSvc)
 	adminUserH := handler.NewAdminUserHandler(userSvc)
@@ -165,6 +193,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	adminRedemptionH := handler.NewAdminRedemptionHandler(redemptionSvc)
 	adminAnnH := handler.NewAdminAnnouncementHandler(annSvc)
 	adminEmailH := handler.NewAdminEmailHandler(emailSvc, annSvc, db)
+	adminTelegramH := handler.NewAdminTelegramHandler(telegramSvc, annSvc)
 
 	admin := r.Group("/api/v1/admin")
 	{
@@ -220,6 +249,9 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 
 		// Broadcast email to users (optionally also as an announcement).
 		adminAuth.POST("/email/send", adminEmailH.Send)
+
+		// Telegram broadcast to linked users (optionally also an announcement).
+		adminAuth.POST("/telegram/broadcast", adminTelegramH.Broadcast)
 
 		adminAuth.POST("/change-password", adminAuthH.ChangePassword)
 

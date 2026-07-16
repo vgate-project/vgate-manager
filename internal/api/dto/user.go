@@ -45,6 +45,11 @@ type SetUserNodesRequest struct {
 	NodeIDs []string `json:"node_ids" binding:"required"`
 }
 
+// UpdateProfileRequest is the self-service profile edit body.
+type UpdateProfileRequest struct {
+	Username *string `json:"username" binding:"required"`
+}
+
 // --- User auth ---
 
 type UserLoginRequest struct {
