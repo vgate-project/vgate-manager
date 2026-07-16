@@ -2,7 +2,8 @@
 
 Backend API server for **VGate** — admin/identity/billing management and the data
 plane that proxy nodes report into. Written in Go. This is the **source of truth**
-for the whole system: nodes, users, plans, orders, and traffic all live here.
+for the whole system: nodes, users, plans, orders, and traffic all live here,
+including per-user and per-node speed caps that the proxy nodes enforce.
 
 ## Tech stack
 
