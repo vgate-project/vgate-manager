@@ -296,6 +296,8 @@ func applyPlanEffect(tx *gorm.DB, user *model.User, plan *model.Plan, durationDa
 	user.DownTotal = 0
 	user.LastResetAt = &now
 	user.Level = plan.Level
+	user.SpeedLimitUpBps = plan.SpeedLimitUpBps
+	user.SpeedLimitDownBps = plan.SpeedLimitDownBps
 	user.CurrentProductID = plan.ID
 	user.CurrentProductKind = model.OrderKindPlan
 	return tx.Save(user).Error

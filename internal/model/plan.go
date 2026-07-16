@@ -10,9 +10,11 @@ type Plan struct {
 	ID          string `gorm:"primaryKey;size:36" json:"id"`
 	Name        string `gorm:"size:128;not null" json:"name"`
 	Description string `gorm:"type:text" json:"description"`
-	Level       int    `gorm:"default:0" json:"level"`
-	QuotaBytes  int64  `gorm:"not null;default:0" json:"quota_bytes"`
-	Enabled     bool   `gorm:"not null" json:"enabled"`
+	Level            int   `gorm:"default:0" json:"level"`
+	QuotaBytes       int64 `gorm:"not null;default:0" json:"quota_bytes"`
+	SpeedLimitUpBps  int64 `gorm:"not null;default:0" json:"speed_limit_up_bps"`
+	SpeedLimitDownBps int64 `gorm:"not null;default:0" json:"speed_limit_down_bps"`
+	Enabled          bool  `gorm:"not null" json:"enabled"`
 	// ResetEnabled / ResetPrice define an optional plan-scoped "traffic reset
 	// package": when enabled, a user with this plan active can self-purchase a
 	// reset that zeroes their used traffic (up_total/down_total) without

@@ -298,5 +298,12 @@ func validateNode(node *model.Node) error {
 	if node.TrafficMultiplier != 0 && (node.TrafficMultiplier < 0.01 || node.TrafficMultiplier > 1000) {
 		return fmt.Errorf("traffic_multiplier must be between 0.01 and 1000 (got %g)", node.TrafficMultiplier)
 	}
+	const maxSpeedBps = 10 * 1024 * 1024 * 1024 // 10 Gbps
+	if node.SpeedLimitUpBps < 0 || node.SpeedLimitUpBps > maxSpeedBps {
+		return fmt.Errorf("speed_limit_up_bps must be between 0 and %d bytes/sec (got %d)", maxSpeedBps, node.SpeedLimitUpBps)
+	}
+	if node.SpeedLimitDownBps < 0 || node.SpeedLimitDownBps > maxSpeedBps {
+		return fmt.Errorf("speed_limit_down_bps must be between 0 and %d bytes/sec (got %d)", maxSpeedBps, node.SpeedLimitDownBps)
+	}
 	return nil
 }

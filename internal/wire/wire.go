@@ -10,6 +10,10 @@ type Config struct {
 	Port   int    `json:"port"`
 	Stream Stream `json:"stream"`
 	VLESS  VLESS  `json:"vless,omitempty"`
+	// SpeedLimitUpBps / SpeedLimitDownBps cap the node's aggregate upload /
+	// download throughput in bytes/sec (0 = unlimited). Enforced by the node.
+	SpeedLimitUpBps   int64 `json:"speed_limit_up_bps"`
+	SpeedLimitDownBps int64 `json:"speed_limit_down_bps"`
 }
 
 // VLESS holds VLESS-protocol inbound settings (v2 AEAD decryption).
@@ -63,6 +67,10 @@ type User struct {
 	Email    string    `json:"email"` // traffic-accounting key
 	Level    int       `json:"level"`
 	ExpireAt time.Time `json:"expire_at"`
+	// SpeedLimitUpBps / SpeedLimitDownBps cap this user's upload / download
+	// throughput in bytes/sec (0 = unlimited).
+	SpeedLimitUpBps   int64 `json:"speed_limit_up_bps"`
+	SpeedLimitDownBps int64 `json:"speed_limit_down_bps"`
 }
 
 // UserTraffic is a delta traffic report (bytes since last successful report,

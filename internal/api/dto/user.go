@@ -17,7 +17,12 @@ type UserRequest struct {
 	ExpireAt          *time.Time `json:"expire_at"`
 	QuotaBytes        int64      `json:"quota_bytes"`
 	QuotaResetEnabled bool       `json:"quota_reset_enabled"`
-	Enabled           *bool      `json:"enabled"`
+	// SpeedLimitUpBps / SpeedLimitDownBps cap this user's upload / download
+	// throughput in bytes/sec (0 = unlimited). Effective rate is min of this
+	// and the node's global limit.
+	SpeedLimitUpBps   int64 `json:"speed_limit_up_bps" binding:"gte=0"`
+	SpeedLimitDownBps int64 `json:"speed_limit_down_bps" binding:"gte=0"`
+	Enabled           *bool `json:"enabled"`
 	// MaxInvites overrides the user's invite quota (cap on successful
 	// registrations they may sponsor). 0 ⇒ use the global default.
 	MaxInvites *int `json:"max_invites"`

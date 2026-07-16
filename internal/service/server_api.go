@@ -102,6 +102,10 @@ func (s *ServerService) FetchUsers(nodeID string) ([]wire.User, error) {
 			Email:    u.Email,
 			Level:    u.Level,
 			ExpireAt: exp,
+			// Per-user speed limits (bytes/sec, 0 = unlimited). The node
+			// applies min(node global limit, this limit).
+			SpeedLimitUpBps:   u.SpeedLimitUpBps,
+			SpeedLimitDownBps: u.SpeedLimitDownBps,
 		})
 	}
 	return result, nil
@@ -286,5 +290,7 @@ func nodeToConfig(node *model.Node) (*wire.Config, error) {
 	if node.Flow != nil {
 		cfg.VLESS.Flow = *node.Flow
 	}
+	cfg.SpeedLimitUpBps = node.SpeedLimitUpBps
+	cfg.SpeedLimitDownBps = node.SpeedLimitDownBps
 	return cfg, nil
 }

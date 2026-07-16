@@ -27,7 +27,12 @@ type NodeRequest struct {
 	// change). Omit/0 on create to use the default of 1. Virtual child nodes
 	// inherit their parent's multiplier and ignore this value.
 	TrafficMultiplier float64 `json:"traffic_multiplier"`
-	Enabled           *bool   `json:"enabled"`
+	// SpeedLimitUpBps / SpeedLimitDownBps cap the node's aggregate upload /
+	// download throughput in bytes/sec (0 = unlimited). Ignored by virtual
+	// child nodes (they inherit the parent's limit).
+	SpeedLimitUpBps   int64 `json:"speed_limit_up_bps" binding:"gte=0"`
+	SpeedLimitDownBps int64 `json:"speed_limit_down_bps" binding:"gte=0"`
+	Enabled           *bool `json:"enabled"`
 }
 
 // NodeWithToken is the create/regenerate response: the node plus its secret

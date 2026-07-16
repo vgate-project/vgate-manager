@@ -36,7 +36,12 @@ type Node struct {
 	// manager aggregates them (only applied on the manager side). 1 = no change;
 	// >1 inflates reported traffic (e.g. for billing), <1 deflates it. Virtual
 	// child nodes inherit their parent's multiplier.
-	TrafficMultiplier float64    `gorm:"default:1" json:"traffic_multiplier"`
+	TrafficMultiplier float64 `gorm:"default:1" json:"traffic_multiplier"`
+	// SpeedLimitUpBps / SpeedLimitDownBps cap this node's aggregate upload /
+	// download throughput in bytes/sec (0 = unlimited). Enforced by the node
+	// itself; virtual child nodes inherit their parent's limit.
+	SpeedLimitUpBps   int64      `gorm:"default:0" json:"speed_limit_up_bps"`
+	SpeedLimitDownBps int64      `gorm:"default:0" json:"speed_limit_down_bps"`
 	LastSeenAt        *time.Time `gorm:"index" json:"last_seen_at,omitempty"` // liveness (updated each poll)
 	Online            bool       `gorm:"-" json:"online"`                     // server-computed: LastSeenAt within NodeOnlineWindow
 	Enabled           bool       `gorm:"default:true" json:"enabled"`

@@ -42,6 +42,11 @@ type User struct {
 	ExpireAt          *time.Time `gorm:"index" json:"expire_at,omitempty"`
 	QuotaBytes        int64      `gorm:"default:0" json:"quota_bytes"`             // 0 = unlimited
 	QuotaResetEnabled bool       `gorm:"default:false" json:"quota_reset_enabled"` // participates in global monthly reset (reset day from system_config)
+	// SpeedLimitUpBps / SpeedLimitDownBps cap this user's upload / download
+	// throughput in bytes/sec (0 = unlimited). Enforced by the node; the
+	// effective rate is min(node global limit, this per-user limit).
+	SpeedLimitUpBps   int64      `gorm:"default:0" json:"speed_limit_up_bps"`
+	SpeedLimitDownBps int64      `gorm:"default:0" json:"speed_limit_down_bps"`
 	UpTotal           int64      `gorm:"default:0" json:"up_total"`
 	DownTotal         int64      `gorm:"default:0" json:"down_total"`
 	LastTrafficAt     *time.Time `gorm:"index" json:"last_traffic_at,omitempty"` // last node-reported traffic delta

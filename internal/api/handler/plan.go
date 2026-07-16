@@ -55,11 +55,13 @@ func (h *PlanHandler) Create(c *gin.Context) {
 		return
 	}
 	plan := &model.Plan{
-		Name:        req.Name,
-		QuotaBytes:  req.QuotaBytes,
-		Description: req.Description,
-		Level:       req.Level,
-		Prices:      toPlanPrices(req.Prices),
+		Name:             req.Name,
+		QuotaBytes:       req.QuotaBytes,
+		Description:      req.Description,
+		Level:            req.Level,
+		SpeedLimitUpBps:  req.SpeedLimitUpBps,
+		SpeedLimitDownBps: req.SpeedLimitDownBps,
+		Prices:           toPlanPrices(req.Prices),
 	}
 	plan.Enabled = true
 	if req.Enabled != nil {
@@ -88,6 +90,8 @@ func (h *PlanHandler) Update(c *gin.Context) {
 	plan.QuotaBytes = req.QuotaBytes
 	plan.Description = req.Description
 	plan.Level = req.Level
+	plan.SpeedLimitUpBps = req.SpeedLimitUpBps
+	plan.SpeedLimitDownBps = req.SpeedLimitDownBps
 	plan.Prices = toPlanPrices(req.Prices)
 	if req.Enabled != nil {
 		plan.Enabled = *req.Enabled

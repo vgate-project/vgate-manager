@@ -120,6 +120,17 @@ func (s *PlanService) Update(p *model.Plan) error {
 				return err
 			}
 		}
+		// Sync the new speed limits to every user currently on this plan.
+		// Full overwrite (including any manually-set limits) is the intended
+		// behavior: editing a plan's limit redefines the cap for its users.
+		if err := tx.Model(&model.User{}).
+			Where("current_product_id = ? AND current_product_kind = ?", p.ID, model.OrderKindPlan).
+			Updates(map[string]any{
+				"speed_limit_up_bps":   p.SpeedLimitUpBps,
+				"speed_limit_down_bps": p.SpeedLimitDownBps,
+			}).Error; err != nil {
+			return err
+		}
 		return nil
 	})
 }

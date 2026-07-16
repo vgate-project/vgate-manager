@@ -43,7 +43,8 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 		return
 	}
 	user := &model.User{Email: req.Email, Username: req.Username, Level: req.Level,
-		ExpireAt: req.ExpireAt, QuotaBytes: req.QuotaBytes, QuotaResetEnabled: req.QuotaResetEnabled}
+		ExpireAt: req.ExpireAt, QuotaBytes: req.QuotaBytes, QuotaResetEnabled: req.QuotaResetEnabled,
+		SpeedLimitUpBps: req.SpeedLimitUpBps, SpeedLimitDownBps: req.SpeedLimitDownBps}
 	if req.MaxInvites != nil {
 		user.MaxInvites = *req.MaxInvites
 	}
@@ -84,6 +85,8 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 	user.ExpireAt = req.ExpireAt
 	user.QuotaBytes = req.QuotaBytes
 	user.QuotaResetEnabled = req.QuotaResetEnabled
+	user.SpeedLimitUpBps = req.SpeedLimitUpBps
+	user.SpeedLimitDownBps = req.SpeedLimitDownBps
 	if req.MaxInvites != nil {
 		user.MaxInvites = *req.MaxInvites
 	}
