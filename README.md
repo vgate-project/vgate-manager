@@ -134,7 +134,7 @@ Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
 - `POST /admin/utils/generate-x25519`
 - Invites: `GET/POST/DELETE /admin/invites`
 - Announcements: `GET/POST/PUT/DELETE /admin/announcements`
-- Email: `POST /admin/email/send`
+- Email: `POST /admin/email/send`, `POST /admin/email/test`
 - Orders: `POST /admin/orders`, `GET /admin/orders`, `GET /admin/orders/:id`
 - Traffic packages: `GET/POST/PUT/DELETE /admin/traffic-packages[/:id]`
 - Tickets: `GET/POST /admin/tickets`, `GET /admin/tickets/:id`,
@@ -147,6 +147,56 @@ Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
 **Health**
 
 - `GET /health`
+
+## Email
+
+Outbound mail (registration verification, admin broadcasts) is configured entirely via
+DB-backed system config — no restart required. Two backends are supported:
+
+- `smtp` (default) — a traditional SMTP server (`email.smtp_host` / `email.smtp_port` /
+  `email.smtp_security` / `email.smtp_user` / `email.smtp_pass`).
+- `resend` — the Resend API (`email.resend_api_key`).
+
+Shared settings (both backends): `email.enabled` (master switch), `email.from` (the sender
+address; for Resend it must be a verified domain), and an optional `email.from_name`
+(display name, e.g. `VGate` → `"VGate" <noreply@vgate.io>`).
+
+> Legacy per-backend `email.smtp_from` / `email.resend_from` keys are migrated into the
+> single `email.from` on startup.
+
+Verify connectivity from the admin console (**System Config → Email → General → Test Email**)
+or call the endpoint directly:
+
+- `POST /admin/email/test` — body `{ "to": "you@example.com", "subject?": "...", "body?": "..." }`.
+  Uses the **currently saved** configuration (save first if you just edited settings) and
+  returns `{ "ok": true }` on success or `{ "ok": false, "error": "..." }` on delivery failure.
+
+## Registration & email verification
+
+Registration (`POST /user/register`) is open when `user.register_enabled` is true. When
+`user.register_require_email_verify` is also true, the account is held pending and a
+verification email is sent; otherwise it is active immediately.
+
+Either way the API returns a session token and the client auto-logs-in:
+
+- `201` — account active (verified, or verification not required).
+- `202` — pending verification, but the user is **already logged in**.
+
+Email verification gates **purchases and traffic only** — an unverified user can log in and
+browse, but cannot place orders and the proxy nodes will not serve their traffic until
+`email_verified` is true. Completing verification (clicking the emailed link, or using the
+in-app resend) flips that flag and the restriction lifts on the next node sync.
+
+## Traffic quota
+
+A user's traffic cap is stored as `quota_bytes` with this sentinel convention:
+
+- `-1` — unlimited.
+- `0` — no quota (access blocked; the user cannot consume traffic until granted a plan).
+- `>0` — capped at that many bytes.
+
+The manager filters the authorized users it pushes to proxy nodes accordingly, so a node
+never serves traffic for a blocked or over-quota user.
 
 ## Telegram integration
 
