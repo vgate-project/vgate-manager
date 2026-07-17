@@ -81,7 +81,7 @@ func (s *EmailService) Send(to, subject, htmlBody string) error {
 
 // SendVerification emails the registration verification link to the user. Both a
 // clickable link and the raw token are included so verification still works when
-// app.user_base_url is not configured (link is then empty).
+// site.base_url is not configured (link is then empty).
 func (s *EmailService) SendVerification(to, link, token string) error {
 	subject := "Verify your vgate account"
 	linkHTML := ""

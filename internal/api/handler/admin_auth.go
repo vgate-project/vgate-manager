@@ -12,10 +12,11 @@ import (
 type AdminAuthHandler struct {
 	svc     *service.AuthService
 	captcha *service.CaptchaService
+	sysCfg  *service.SystemConfigService
 }
 
-func NewAdminAuthHandler(svc *service.AuthService, captcha *service.CaptchaService) *AdminAuthHandler {
-	return &AdminAuthHandler{svc: svc, captcha: captcha}
+func NewAdminAuthHandler(svc *service.AuthService, captcha *service.CaptchaService, sysCfg *service.SystemConfigService) *AdminAuthHandler {
+	return &AdminAuthHandler{svc: svc, captcha: captcha, sysCfg: sysCfg}
 }
 
 // GetConfig serves GET /api/v1/admin/config — public (unauthenticated) system
@@ -26,6 +27,7 @@ func (h *AdminAuthHandler) GetConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, dto.AdminConfigResponse{
 		CaptchaEnabled: h.captcha.Enabled(),
 		CaptchaSiteKey: h.captcha.SiteKey(),
+		SiteName:       h.sysCfg.GetSiteName(),
 	})
 }
 

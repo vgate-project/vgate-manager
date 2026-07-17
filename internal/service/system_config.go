@@ -54,10 +54,16 @@ const (
 	// registrations a user may sponsor via self-generated invite codes. 0 disables
 	// user-generated invites (admins can still mint codes directly).
 	CfgKeyInviteDefaultUserQuota = "invite.default_user_quota"
-	// CfgKeyAppUserBaseURL is the public base URL of the user-facing SPA, used
-	// to build clickable links in emails (verification). Empty ⇒ emails fall
-	// back to printing the raw token with manual instructions.
-	CfgKeyAppUserBaseURL = "app.user_base_url"
+	// CfgKeySiteBaseURL is the public base URL of the user-facing SPA, used to
+	// build clickable links in emails (verification). Empty ⇒ emails fall back
+	// to printing the raw token with manual instructions.
+	CfgKeySiteBaseURL = "site.base_url"
+
+	// CfgKeySiteName is the display name of the site, shown on the admin and
+	// user portals (login page, sidebar brand, browser tab title). It is a
+	// plain string with no parsing; an empty/absent value falls back to
+	// "VGate" on read (see GetSiteName).
+	CfgKeySiteName = "site.name"
 
 	// Email (SMTP) config keys. Values are stored as SystemConfig rows so an
 	// admin can configure mail delivery at runtime without editing config.yml.
@@ -345,12 +351,22 @@ func (s *SystemConfigService) GetInviteDefaultUserQuota() int {
 	return n
 }
 
-// GetAppUserBaseURL returns the public base URL of the user SPA used to build
+// GetSiteBaseURL returns the public base URL of the user SPA used to build
 // emailed links (may be empty).
-func (s *SystemConfigService) GetAppUserBaseURL() string {
-	v, err := s.Get(CfgKeyAppUserBaseURL)
+func (s *SystemConfigService) GetSiteBaseURL() string {
+	v, err := s.Get(CfgKeySiteBaseURL)
 	if err != nil {
 		return ""
+	}
+	return v
+}
+
+// GetSiteName returns the configured site display name, falling back to
+// "VGate" when the key is absent (e.g. before the first seed) or empty.
+func (s *SystemConfigService) GetSiteName() string {
+	v, err := s.Get(CfgKeySiteName)
+	if err != nil || v == "" {
+		return "VGate"
 	}
 	return v
 }
@@ -455,7 +471,8 @@ func (s *SystemConfigService) defaultConfigRows() map[string]string {
 		CfgKeyRegisterRequireInvite:      "false",
 		CfgKeyRegisterRequireEmailVerify: "false",
 		CfgKeyInviteDefaultUserQuota:     "5",
-		CfgKeyAppUserBaseURL:             "",
+		CfgKeySiteBaseURL:               "",
+		CfgKeySiteName:                   "VGate",
 		CfgKeyEmailEnabled:               "false",
 		CfgKeyEmailSMTPHost:              "",
 		CfgKeyEmailSMTPPort:              "587",

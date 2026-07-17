@@ -84,4 +84,5 @@ type UserConfigResponse struct {
 	RegisterRequireEmailVerify bool   `json:"register_require_email_verify"`
 	CaptchaEnabled             bool   `json:"captcha_enabled"`
 	CaptchaSiteKey             string `json:"captcha_site_key"`
+	SiteName                   string `json:"site_name"`
 }

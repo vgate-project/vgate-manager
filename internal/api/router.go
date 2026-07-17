@@ -66,7 +66,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	// system-config). Shared across the public + admin auth handlers.
 	captchaSvc := service.NewCaptchaService(sysCfg)
 	subH := handler.NewSubHandler(subSvc)
-	userAuthH := handler.NewUserAuthHandler(authSvc, userSvc, captchaSvc)
+	userAuthH := handler.NewUserAuthHandler(authSvc, userSvc, captchaSvc, sysCfg)
 	userH := handler.NewUserHandler(userSvc, subSvc, sysCfg)
 
 	// Billing (plans + orders + traffic packages) services/handlers.
@@ -196,7 +196,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	telegramSvc.SetNodeService(nodeSvc)
 	telegramSvc.SetStatsService(statsSvc)
 
-	adminAuthH := handler.NewAdminAuthHandler(authSvc, captchaSvc)
+	adminAuthH := handler.NewAdminAuthHandler(authSvc, captchaSvc, sysCfg)
 	adminNodeH := handler.NewAdminNodeHandler(nodeSvc)
 	adminUserH := handler.NewAdminUserHandler(userSvc)
 	adminAdminH := handler.NewAdminAdminHandler(authSvc)

@@ -13,10 +13,11 @@ type UserAuthHandler struct {
 	svc     *service.AuthService
 	userSvc *service.UserService
 	captcha *service.CaptchaService
+	sysCfg  *service.SystemConfigService
 }
 
-func NewUserAuthHandler(svc *service.AuthService, userSvc *service.UserService, captcha *service.CaptchaService) *UserAuthHandler {
-	return &UserAuthHandler{svc: svc, userSvc: userSvc, captcha: captcha}
+func NewUserAuthHandler(svc *service.AuthService, userSvc *service.UserService, captcha *service.CaptchaService, sysCfg *service.SystemConfigService) *UserAuthHandler {
+	return &UserAuthHandler{svc: svc, userSvc: userSvc, captcha: captcha, sysCfg: sysCfg}
 }
 
 // GetConfig serves GET /api/v1/user/config — returns public system settings.
@@ -27,6 +28,7 @@ func (h *UserAuthHandler) GetConfig(c *gin.Context) {
 		RegisterRequireEmailVerify: h.svc.IsRegisterRequireEmailVerify(),
 		CaptchaEnabled:             h.captcha.Enabled(),
 		CaptchaSiteKey:             h.captcha.SiteKey(),
+		SiteName:                   h.sysCfg.GetSiteName(),
 	})
 }
 

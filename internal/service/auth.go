@@ -511,12 +511,12 @@ func (a *AuthService) RegisterUser(username, email, password, inviteCode string)
 }
 
 // buildVerifyLink returns the clickable verification URL, or "" when
-// app.user_base_url is not configured (the raw token is shown in the email).
+// site.base_url is not configured (the raw token is shown in the email).
 func (a *AuthService) buildVerifyLink(token string) string {
 	if a.sysCfg == nil {
 		return ""
 	}
-	base := a.sysCfg.GetAppUserBaseURL()
+	base := a.sysCfg.GetSiteBaseURL()
 	if base == "" {
 		return ""
 	}

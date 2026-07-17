@@ -22,6 +22,7 @@ type AdminLoginResponse struct {
 type AdminConfigResponse struct {
 	CaptchaEnabled bool   `json:"captcha_enabled"`
 	CaptchaSiteKey string `json:"captcha_site_key"`
+	SiteName       string `json:"site_name"`
 }
 
 type RefreshRequest struct {
