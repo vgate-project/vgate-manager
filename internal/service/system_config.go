@@ -93,12 +93,6 @@ const (
 	CfgKeyTelegramEnabled     = "telegram.enabled"      // "true" | "false" — master switch
 	CfgKeyTelegramBotToken    = "telegram.bot_token"    // BotFather token (secret)
 	CfgKeyTelegramBotUsername = "telegram.bot_username" // bot @username, used for deep links
-	// CfgKeyTelegramAdminChatIDs is the JSON array of chat IDs that receive
-	// admin alerts and are permitted to issue remote-control commands. Group /
-	// channel IDs are negative integers. Stored as a JSON array of numbers
-	// (e.g. [123,-456]) or numeric strings (e.g. ["123","-456"]) — the admin
-	// UI's tags input emits the latter, so the parser accepts both.
-	CfgKeyTelegramAdminChatIDs   = "telegram.admin_chat_ids"   // JSON array of int64 (or numeric strings)
 	CfgKeyTelegramUserBotEnabled = "telegram.user_bot_enabled" // "true" | "false" — user self-service
 
 	// Per-event alert toggles. Each admin alert is independently enableable so
@@ -109,6 +103,7 @@ const (
 	CfgKeyAlertNodeDown        = "telegram.alert_node_down"
 	CfgKeyAlertTrafficExceeded = "telegram.alert_traffic_exceeded"
 	CfgKeyAlertAnnouncement    = "telegram.alert_announcement"
+	CfgKeyAlertTicket          = "telegram.alert_ticket"
 )
 
 type SystemConfigService struct {
@@ -398,7 +393,6 @@ type TelegramConfig struct {
 	Enabled           bool
 	BotToken          string
 	BotUsername       string
-	AdminChatIDs      []int64
 	UserBotEnabled    bool
 	AlertNewReg       bool
 	AlertOrderPaid    bool
@@ -406,6 +400,7 @@ type TelegramConfig struct {
 	AlertNodeDown     bool
 	AlertTraffic      bool
 	AlertAnnouncement bool
+	AlertTicket       bool
 }
 
 // GetTelegramConfig reads the Telegram bot settings from SystemConfig. Missing
@@ -427,34 +422,7 @@ func (s *SystemConfigService) GetTelegramConfig() (TelegramConfig, error) {
 		AlertNodeDown:     m[CfgKeyAlertNodeDown] == "true",
 		AlertTraffic:      m[CfgKeyAlertTrafficExceeded] == "true",
 		AlertAnnouncement: m[CfgKeyAlertAnnouncement] == "true",
-	}
-	if v, ok := m[CfgKeyTelegramAdminChatIDs]; ok && v != "" {
-		// The admin UI's tags input stores the value as a JSON array of
-		// strings (e.g. ["123","-456"]), while a hand-edited config may use a
-		// JSON array of numbers (e.g. [123,-456]). Accept both: unmarshal into
-		// a string slice and convert each element to int64, skipping any entry
-		// that is not a valid integer rather than dropping the whole list.
-		var raw []string
-		if err := json.Unmarshal([]byte(v), &raw); err != nil {
-			// Not an array of strings — try a plain array of numbers.
-			var nums []int64
-			if e2 := json.Unmarshal([]byte(v), &nums); e2 != nil {
-				log.Warnf("system-config: invalid %s, ignored: %v", CfgKeyTelegramAdminChatIDs, err)
-			} else {
-				cfg.AdminChatIDs = nums
-			}
-		} else {
-			ids := make([]int64, 0, len(raw))
-			for _, s := range raw {
-				n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-				if err != nil {
-					log.Warnf("system-config: skipping invalid %s entry %q: %v", CfgKeyTelegramAdminChatIDs, s, err)
-					continue
-				}
-				ids = append(ids, n)
-			}
-			cfg.AdminChatIDs = ids
-		}
+		AlertTicket:       m[CfgKeyAlertTicket] == "true",
 	}
 	return cfg, nil
 }
@@ -502,7 +470,6 @@ func (s *SystemConfigService) defaultConfigRows() map[string]string {
 		CfgKeyTelegramEnabled:            "false",
 		CfgKeyTelegramBotToken:           "",
 		CfgKeyTelegramBotUsername:        "",
-		CfgKeyTelegramAdminChatIDs:       "[]",
 		CfgKeyTelegramUserBotEnabled:     "false",
 		CfgKeyAlertNewRegistration:       "false",
 		CfgKeyAlertOrderPaid:             "false",
@@ -510,6 +477,7 @@ func (s *SystemConfigService) defaultConfigRows() map[string]string {
 		CfgKeyAlertNodeDown:              "false",
 		CfgKeyAlertTrafficExceeded:       "false",
 		CfgKeyAlertAnnouncement:          "false",
+		CfgKeyAlertTicket:                "false",
 	}
 }
 

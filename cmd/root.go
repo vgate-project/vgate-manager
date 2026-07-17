@@ -81,6 +81,8 @@ func run() {
 		&model.PlanPrice{},
 		&model.TrafficPackage{},
 		&model.Order{},
+		&model.Ticket{},
+		&model.TicketMessage{},
 	); err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
 	}

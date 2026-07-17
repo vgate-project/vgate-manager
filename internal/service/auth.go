@@ -193,6 +193,47 @@ func (a *AuthService) GetAdmin(id uint) (*model.Admin, error) {
 	return &admin, nil
 }
 
+// GetAdminByTelegramID returns the admin linked to a Telegram chat ID, or
+// nil when none is linked.
+func (a *AuthService) GetAdminByTelegramID(telegramID int64) (*model.Admin, error) {
+	if telegramID == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var admin model.Admin
+	if err := a.db.Where("telegram_id = ?", telegramID).First(&admin).Error; err != nil {
+		return nil, err
+	}
+	return &admin, nil
+}
+
+// SetAdminTelegram links (or unlinks, with chatID 0) a Telegram chat to an
+// admin account. Used by the admin Telegram bind flow. A chat may only be
+// linked to one admin, so before linking we clear any other admin that already
+// holds the same chat id; this prevents two admins from answering tickets under
+// the same Telegram identity. Unlinking (chatID 0) only touches the target row.
+func (a *AuthService) SetAdminTelegram(adminID uint, chatID int64) error {
+	if chatID != 0 {
+		// Clear the chat from any other admin that may still hold it.
+		if res := a.db.Model(&model.Admin{}).
+			Where("telegram_id = ? AND id <> ?", chatID, adminID).
+			Updates(map[string]any{
+				"telegram_id":              0,
+				"telegram_bind_token":      "",
+				"telegram_bind_expires_at": nil,
+			}); res.Error != nil {
+			return res.Error
+		}
+	}
+	res := a.db.Model(&model.Admin{}).
+		Where("id = ?", adminID).
+		Updates(map[string]any{
+			"telegram_id":              chatID,
+			"telegram_bind_token":      "",
+			"telegram_bind_expires_at": nil,
+		})
+	return res.Error
+}
+
 // UpdateAdmin changes an admin's username and/or role. An empty field is left
 // unchanged. Role, when set, must be a known value.
 func (a *AuthService) UpdateAdmin(id uint, username, role string) (*model.Admin, error) {

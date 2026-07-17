@@ -66,6 +66,16 @@ func NewRedemptionID() string {
 	return ulid.Make().String()
 }
 
+// NewTicketID returns a ULID for a Ticket primary key.
+func NewTicketID() string {
+	return ulid.Make().String()
+}
+
+// NewTicketMessageID returns a ULID for a TicketMessage primary key.
+func NewTicketMessageID() string {
+	return ulid.Make().String()
+}
+
 // NewRedemptionCode returns a URL-safe shareable redemption code (24 hex chars,
 // no ambiguous characters). RandomToken already uses crypto/rand.
 func NewRedemptionCode() string {

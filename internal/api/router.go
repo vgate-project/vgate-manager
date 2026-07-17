@@ -101,11 +101,20 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	// are created in the admin section below). It is wired back into the
 	// services that emit admin alerts, and its user link handler is
 	// registered into the userProtected group below.
-	telegramSvc := service.NewTelegramService(db, sysCfg, userSvc, annSvc, orderSvc, nil, nil, subSvc)
+	telegramSvc := service.NewTelegramService(db, sysCfg, authSvc, userSvc, annSvc, orderSvc, nil, nil, subSvc)
 	authSvc.SetTelegramService(telegramSvc)
 	orderSvc.SetTelegramService(telegramSvc)
 	annSvc.SetTelegramService(telegramSvc)
 	telegramUserH := handler.NewTelegramUserHandler(telegramSvc)
+
+	// Ticket service: users open tickets and reply; admins reply + change
+	// status. Notification services are wired in so an admin reply can reach
+	// the ticket owner via email / Telegram (both no-op when unset).
+	ticketSvc := service.NewTicketService(db)
+	ticketSvc.SetEmailService(emailSvc)
+	ticketSvc.SetTelegramService(telegramSvc)
+	// Let the bot reply to tickets from Telegram by quoting the notification.
+	telegramSvc.SetTicketService(ticketSvc)
 	telegramSvc.Run()
 
 	// User-facing invite + announcement handlers (used in the userProtected group).
@@ -160,6 +169,14 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 
 		// Active announcements for the user SPA.
 		userProtected.GET("/announcements", userAnnH.List)
+
+		// Tickets: users open, list, view, and reply to their own tickets.
+		userTicketH := handler.NewUserTicketHandler(ticketSvc)
+		userProtected.GET("/tickets", userTicketH.List)
+		userProtected.POST("/tickets", userTicketH.Create)
+		userProtected.GET("/tickets/:id", userTicketH.Get)
+		userProtected.POST("/tickets/:id/messages", userTicketH.Reply)
+		userProtected.POST("/tickets/:id/close", userTicketH.Close)
 
 		// Telegram link management: status, one-time bind code, unlink,
 		// and announcement opt-in toggle.
@@ -247,11 +264,25 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		adminAuth.PUT("/announcements/:id", adminAnnH.Update)
 		adminAuth.DELETE("/announcements/:id", adminAnnH.Delete)
 
+		// Tickets: admins list/view all tickets, reply, and change status.
+		adminTicketH := handler.NewAdminTicketHandler(ticketSvc)
+		adminAuth.GET("/tickets", adminTicketH.List)
+		adminAuth.GET("/tickets/:id", adminTicketH.Get)
+		adminAuth.POST("/tickets/:id/messages", adminTicketH.Reply)
+		adminAuth.PUT("/tickets/:id/status", adminTicketH.SetStatus)
+
 		// Broadcast email to users (optionally also as an announcement).
 		adminAuth.POST("/email/send", adminEmailH.Send)
 
 		// Telegram broadcast to linked users (optionally also an announcement).
 		adminAuth.POST("/telegram/broadcast", adminTelegramH.Broadcast)
+
+		// Admin self-service Telegram link, so an admin can reply to tickets
+		// from the bot. The link flow mirrors the user bind flow (/astart).
+		adminTelegramSelfH := handler.NewTelegramAdminHandler(telegramSvc)
+		adminAuth.GET("/me/telegram/status", adminTelegramSelfH.Status)
+		adminAuth.POST("/me/telegram/bind", adminTelegramSelfH.Bind)
+		adminAuth.POST("/me/telegram/unbind", adminTelegramSelfH.Unbind)
 
 		adminAuth.POST("/change-password", adminAuthH.ChangePassword)
 
