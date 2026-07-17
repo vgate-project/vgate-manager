@@ -70,10 +70,11 @@ func (h *UserAuthHandler) Register(c *gin.Context) {
 		return
 	}
 	if pending {
-		c.JSON(http.StatusAccepted, gin.H{
-			"message": "Registration received. Please check your email to verify your address before logging in.",
-			"pending": true,
-		})
+		// 202 still carries a session: unverified accounts can log in (verification
+		// only gates purchases/traffic), so the client auto-logs-in and the
+		// dashboard's verify banner guides the user. The status stays 202 to
+		// signal "registered, verification pending" for any client that cares.
+		c.JSON(http.StatusAccepted, dto.UserLoginResponse{Token: token, ExpiresAt: exp, Level: 0})
 		return
 	}
 	// Note: RegisterUser returns level 0 for new users.
@@ -100,6 +101,27 @@ func (h *UserAuthHandler) VerifyEmail(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Email verified. Your account is now active — you can log in."})
+}
+
+// ResendVerification serves POST /api/v1/user/resend-verification — re-sends
+// the registration verification email for a pending account. Public (rate-limited).
+func (h *UserAuthHandler) ResendVerification(c *gin.Context) {
+	var req dto.ResendVerificationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.captcha.Verify(req.CaptchaToken, c.ClientIP()); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.svc.ResendVerification(req.Email); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message": "If a pending account exists for that email, a new verification link has been sent.",
+	})
 }
 
 // ChangePassword serves POST /api/v1/user/change-password — the caller rotates

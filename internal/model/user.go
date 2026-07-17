@@ -40,7 +40,7 @@ type User struct {
 	SubToken          string     `gorm:"uniqueIndex;size:32;not null" json:"sub_token"` // crypto-random share-URL credential
 	Level             int        `gorm:"default:0" json:"level"`
 	ExpireAt          *time.Time `gorm:"index" json:"expire_at,omitempty"`
-	QuotaBytes        int64      `gorm:"default:0" json:"quota_bytes"`             // 0 = unlimited
+	QuotaBytes        int64      `gorm:"default:0" json:"quota_bytes"`             // traffic cap in bytes: -1 = unlimited, 0 = no quota (blocked), >0 = capped
 	QuotaResetEnabled bool       `gorm:"default:false" json:"quota_reset_enabled"` // participates in global monthly reset (reset day from system_config)
 	// SpeedLimitUpBps / SpeedLimitDownBps cap this user's upload / download
 	// throughput in bytes/sec (0 = unlimited). Enforced by the node; the

@@ -34,6 +34,10 @@ var (
 	ErrOrderNotPending = errors.New("order is not pending")
 	// ErrInvalidOrderKind is returned when Create is given an unknown kind.
 	ErrInvalidOrderKind = errors.New("unknown order kind")
+	// ErrEmailNotVerified is returned when a self-service purchase is attempted
+	// by an account that has not yet verified its email. Admins placing orders
+	// on a user's behalf are exempt.
+	ErrEmailNotVerified = errors.New("email not verified")
 )
 
 // CreateOrderParams describes what a user wants to buy.
@@ -98,6 +102,18 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		return nil, nil, ErrPendingOrderExists
 	}
 
+	// Self-service purchases require a verified email; admins placing an order
+	// on a user's behalf (isAdmin) are exempt. Traffic itself is also gated at
+	// the node (server_api.go filters on email_verified), so an unverified
+	// account can log in and manage its profile but cannot buy or consume.
+	var user model.User
+	if err := s.db.First(&user, "id = ?", userID).Error; err != nil {
+		return nil, nil, err
+	}
+	if !isAdmin && !user.EmailVerified {
+		return nil, nil, ErrEmailNotVerified
+	}
+
 	platform := p.Platform
 	if platform == "" {
 		platform = model.OrderPlatformAlipay
@@ -156,11 +172,7 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		// Self-service reset requires the user's active product to be this plan.
 		// Admins creating on a user's behalf skip this ownership check.
 		if !isAdmin {
-			var u model.User
-			if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
-				return nil, nil, err
-			}
-			if u.CurrentProductID != plan.ID {
+			if user.CurrentProductID != plan.ID {
 				return nil, nil, errors.New("traffic reset is only available for your active plan")
 			}
 		}

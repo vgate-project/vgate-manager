@@ -72,6 +72,11 @@ type UserRegisterRequest struct {
 	CaptchaToken string `json:"cf_turnstile_response"`
 }
 
+type ResendVerificationRequest struct {
+	Email        string `json:"email" binding:"required"`
+	CaptchaToken string `json:"cf_turnstile_response"`
+}
+
 type UserLoginResponse struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`

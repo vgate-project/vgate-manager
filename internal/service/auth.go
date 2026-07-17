@@ -455,11 +455,17 @@ func (a *AuthService) RegisterUser(username, email, password, inviteCode string)
 		Username:     &username,
 		Email:        email,
 		PasswordHash: &hash,
-		Enabled:      !requireVerify, // pending until verified when required
-		Level:        0,
-		Credential:   util.NewCredential(),
-		SubToken:     util.RandomToken(16),
-		MaxInvites:   defaultQuota,
+		// Enabled is the admin on/off switch and is true at registration. The
+		// pending (unverified) state is expressed by EmailVerified=false, not by
+		// Enabled=false, so email_verified is the source of truth for "can use
+		// the service". When verification is not required the account is
+		// considered verified at creation.
+		Enabled:       true,
+		EmailVerified: !requireVerify,
+		Level:         0,
+		Credential:    util.NewCredential(),
+		SubToken:      util.RandomToken(16),
+		MaxInvites:    defaultQuota,
 	}
 
 	if err = a.db.Create(user).Error; err != nil {
@@ -499,7 +505,15 @@ func (a *AuthService) RegisterUser(username, email, password, inviteCode string)
 				log.Warnf("registration: failed to send verification email to %s: %v", email, serr)
 			}
 		}
-		return user, "", time.Time{}, true, nil
+		// Issue a session even while pending: unverified accounts can now log in
+		// (email verification only gates purchases and traffic, not login), so
+		// the client can auto-log-in and land on the dashboard's verify banner
+		// instead of a dead "waiting for verification" page.
+		token, exp, _, err = a.UserLogin(email, password)
+		if err != nil {
+			return user, "", time.Time{}, true, fmt.Errorf("issue session: %w", err)
+		}
+		return user, token, exp, true, nil
 	}
 
 	// Auto-login: issue token.
@@ -546,6 +560,51 @@ func (a *AuthService) VerifyEmail(token string) error {
 		return err
 	}
 	return a.db.Model(&ev).Update("consumed_at", new(time.Now())).Error
+}
+
+// ResendVerification re-issues the registration verification email for a
+// pending (registered-but-unverified) account. Any prior un-consumed
+// verification token for that user is invalidated so only the newest link
+// works. To avoid leaking which addresses are already registered, a missing
+// pending account (or disabled verification) is treated as a silent no-op.
+func (a *AuthService) ResendVerification(email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if a.sysCfg != nil && !a.sysCfg.IsRegisterRequireEmailVerify() {
+		return nil
+	}
+	var user model.User
+	// Pending users now have enabled=true with email_verified=false, so match
+	// only on the verification flag.
+	if err := a.db.Where("email = ? AND email_verified = ?", email, false).
+		First(&user).Error; err != nil {
+		return nil // no pending account → silent no-op
+	}
+	now := time.Now()
+	// Invalidate prior un-consumed tokens for this user/registration purpose.
+	a.db.Model(&model.EmailVerification{}).
+		Where("user_id = ? AND purpose = ? AND consumed_at IS NULL", user.ID, "register").
+		Update("consumed_at", &now)
+	vtok := util.RandomToken(16)
+	ev := &model.EmailVerification{
+		ID:        util.NewVerificationID(),
+		UserID:    user.ID,
+		Email:     email,
+		Token:     vtok,
+		Purpose:   "register",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}
+	if err := a.db.Create(ev).Error; err != nil {
+		return fmt.Errorf("create verification: %w", err)
+	}
+	if a.emailSvc != nil {
+		link := a.buildVerifyLink(vtok)
+		if serr := a.emailSvc.SendVerification(email, link, vtok); serr != nil {
+			// Best-effort: the pending account + valid token still let the user
+			// verify later; surface via log rather than failing the request.
+			log.Warnf("resend-verification: failed to send email to %s: %v", email, serr)
+		}
+	}
+	return nil
 }
 
 func (a *AuthService) IsRegisterEnabled() bool {

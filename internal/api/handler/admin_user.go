@@ -45,6 +45,10 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 	user := &model.User{Email: req.Email, Username: req.Username, Level: req.Level,
 		ExpireAt: req.ExpireAt, QuotaBytes: req.QuotaBytes, QuotaResetEnabled: req.QuotaResetEnabled,
 		SpeedLimitUpBps: req.SpeedLimitUpBps, SpeedLimitDownBps: req.SpeedLimitDownBps}
+	// Admin-created accounts are trusted as verified (email_verified is the
+	// source of truth for "can use the service"); the user has no self-service
+	// verification flow.
+	user.EmailVerified = true
 	if req.MaxInvites != nil {
 		user.MaxInvites = *req.MaxInvites
 	}

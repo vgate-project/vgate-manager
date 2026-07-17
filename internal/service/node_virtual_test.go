@@ -28,12 +28,14 @@ func vdb(t *testing.T) *gorm.DB {
 func vuser(t *testing.T, db *gorm.DB, email, cred string, level int) *model.User {
 	t.Helper()
 	u := &model.User{
-		ID:         cred, // reuse cred as PK for simplicity in tests
-		Credential: cred,
-		Email:      email,
-		SubToken:   "sub-" + cred,
-		Level:      level,
-		Enabled:    true,
+		ID:            cred, // reuse cred as PK for simplicity in tests
+		Credential:    cred,
+		Email:         email,
+		SubToken:      "sub-" + cred,
+		Level:         level,
+		QuotaBytes:    -1, // unlimited: these tests exercise node eligibility, not quota
+		Enabled:       true,
+		EmailVerified: true,
 	}
 	if err := db.Create(u).Error; err != nil {
 		t.Fatalf("seed user: %v", err)

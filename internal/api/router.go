@@ -133,6 +133,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	r.POST("/api/v1/user/login", loginLimit, userAuthH.Login)
 	r.POST("/api/v1/user/register", loginLimit, userAuthH.Register)
 	r.POST("/api/v1/user/verify-email", loginLimit, userAuthH.VerifyEmail)
+	r.POST("/api/v1/user/resend-verification", loginLimit, userAuthH.ResendVerification)
 	userProtected := r.Group("/api/v1/user")
 	userProtected.Use(middleware.RequireUser(authSvc))
 	{
@@ -273,6 +274,8 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 
 		// Broadcast email to users (optionally also as an announcement).
 		adminAuth.POST("/email/send", adminEmailH.Send)
+		// Send a single test email to verify connectivity (uses saved config).
+		adminAuth.POST("/email/test", adminEmailH.Test)
 
 		// Telegram broadcast to linked users (optionally also an announcement).
 		adminAuth.POST("/telegram/broadcast", adminTelegramH.Broadcast)

@@ -69,13 +69,21 @@ const (
 	// admin can configure mail delivery at runtime without editing config.yml.
 	// email.smtp_pass is the only secret here and is stored in plaintext at the
 	// same trust level as alipay.private_key (self-hosted, single-tenant).
-	CfgKeyEmailEnabled      = "email.enabled"       // "true" | "false" — gate outbound mail
-	CfgKeyEmailSMTPHost     = "email.smtp_host"     // e.g. smtp.example.com
-	CfgKeyEmailSMTPPort     = "email.smtp_port"     // e.g. 587 (starttls) / 465 (ssl) / 25 (none)
-	CfgKeyEmailSMTPUser     = "email.smtp_user"     // auth user (empty ⇒ no auth)
-	CfgKeyEmailSMTPPass     = "email.smtp_pass"     // auth password
-	CfgKeyEmailSMTPFrom     = "email.smtp_from"     // From: address
+	CfgKeyEmailEnabled  = "email.enabled"   // "true" | "false" — gate outbound mail
+	CfgKeyEmailSMTPHost = "email.smtp_host" // e.g. smtp.example.com
+	CfgKeyEmailSMTPPort = "email.smtp_port" // e.g. 587 (starttls) / 465 (ssl) / 25 (none)
+	CfgKeyEmailSMTPUser = "email.smtp_user" // auth user (empty ⇒ no auth)
+	CfgKeyEmailSMTPPass = "email.smtp_pass" // auth password
+
+	CfgKeyEmailFrom         = "email.from"          // shared From: address used by both SMTP and Resend
+	CfgKeyEmailFromName     = "email.from_name"     // optional display name for the From address
 	CfgKeyEmailSMTPSecurity = "email.smtp_security" // "none" | "starttls" | "ssl" (default "starttls")
+
+	// CfgKeyEmailProvider selects the mail backend: "smtp" (default) or
+	// "resend". Resend delivers via the Resend API and shares the same From
+	// address (email.from) as SMTP — a domain verified at resend.com.
+	CfgKeyEmailProvider     = "email.provider"       // "smtp" | "resend" (default "smtp")
+	CfgKeyEmailResendAPIKey = "email.resend_api_key" // Resend dashboard API key (secret)
 
 	// Captcha (Cloudflare Turnstile) config keys. The feature is opt-in: when
 	// captcha.turnstile_enabled is "false" (the default) no challenge is
@@ -96,9 +104,9 @@ const (
 	// token is the only secret here and is stored in plaintext at the same
 	// trust level as alipay.private_key / email.smtp_pass (self-hosted,
 	// single-tenant).
-	CfgKeyTelegramEnabled     = "telegram.enabled"      // "true" | "false" — master switch
-	CfgKeyTelegramBotToken    = "telegram.bot_token"    // BotFather token (secret)
-	CfgKeyTelegramBotUsername = "telegram.bot_username" // bot @username, used for deep links
+	CfgKeyTelegramEnabled        = "telegram.enabled"          // "true" | "false" — master switch
+	CfgKeyTelegramBotToken       = "telegram.bot_token"        // BotFather token (secret)
+	CfgKeyTelegramBotUsername    = "telegram.bot_username"     // bot @username, used for deep links
 	CfgKeyTelegramUserBotEnabled = "telegram.user_bot_enabled" // "true" | "false" — user self-service
 
 	// Per-event alert toggles. Each admin alert is independently enableable so
@@ -471,15 +479,18 @@ func (s *SystemConfigService) defaultConfigRows() map[string]string {
 		CfgKeyRegisterRequireInvite:      "false",
 		CfgKeyRegisterRequireEmailVerify: "false",
 		CfgKeyInviteDefaultUserQuota:     "5",
-		CfgKeySiteBaseURL:               "",
+		CfgKeySiteBaseURL:                "",
 		CfgKeySiteName:                   "VGate",
 		CfgKeyEmailEnabled:               "false",
 		CfgKeyEmailSMTPHost:              "",
 		CfgKeyEmailSMTPPort:              "587",
 		CfgKeyEmailSMTPUser:              "",
 		CfgKeyEmailSMTPPass:              "",
-		CfgKeyEmailSMTPFrom:              "",
+		CfgKeyEmailFrom:                  "",
+		CfgKeyEmailFromName:              "",
 		CfgKeyEmailSMTPSecurity:          "starttls",
+		CfgKeyEmailProvider:              "smtp",
+		CfgKeyEmailResendAPIKey:          "",
 		CfgKeyCaptchaTurnstileEnabled:    "false",
 		CfgKeyCaptchaTurnstileSiteKey:    "",
 		CfgKeyCaptchaTurnstileSecretKey:  "",

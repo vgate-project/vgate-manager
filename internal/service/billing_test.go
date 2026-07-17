@@ -200,8 +200,8 @@ func TestResetDueQuotasRespectsFlag(t *testing.T) {
 	on := model.User{ID: "on", Credential: "on", Email: "on@example.com", SubToken: "s-on", QuotaBytes: 100, QuotaResetEnabled: true, UpTotal: 30, DownTotal: 40}
 	// enabled=false -> skipped even with finite quota.
 	off := model.User{ID: "off", Credential: "off", Email: "off@example.com", SubToken: "s-off", QuotaBytes: 100, QuotaResetEnabled: false, UpTotal: 30, DownTotal: 40}
-	// unlimited quota -> skipped.
-	unlimited := model.User{ID: "ul", Credential: "ul", Email: "ul@example.com", SubToken: "s-ul", QuotaBytes: 0, QuotaResetEnabled: true, UpTotal: 30, DownTotal: 40}
+	// unlimited quota (-1) -> skipped.
+	unlimited := model.User{ID: "ul", Credential: "ul", Email: "ul@example.com", SubToken: "s-ul", QuotaBytes: -1, QuotaResetEnabled: true, UpTotal: 30, DownTotal: 40}
 	db.Create(&on)
 	db.Create(&off)
 	db.Create(&unlimited)

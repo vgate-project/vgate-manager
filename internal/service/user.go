@@ -270,13 +270,13 @@ func (s *UserService) ChangeOwnPassword(userID, oldPwd, newPwd string) error {
 // quota window. The reset day itself is global and supplied by system_config
 // (quota.reset_day); the caller (the daily cron) is responsible for only
 // invoking this on that day, so it cannot double-reset within a month.
-// It only affects users with a finite quota (quota_bytes <> 0); unlimited
+// It only affects users with a finite quota (quota_bytes > 0); unlimited
 // users and users who have opted out (quota_reset_enabled = false, e.g. after
 // buying a one-time traffic package) keep their historical stats. last_reset_at
 // is stamped so the reset is recorded. Returns the number of users reset.
 func (s *UserService) ResetDueQuotas() (int64, error) {
 	res := s.db.Model(&model.User{}).
-		Where("quota_reset_enabled = ? AND quota_bytes <> ?", true, 0).
+		Where("quota_reset_enabled = ? AND quota_bytes > ?", true, 0).
 		Updates(map[string]any{
 			"up_total":      0,
 			"down_total":    0,

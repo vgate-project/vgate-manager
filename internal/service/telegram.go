@@ -585,8 +585,10 @@ func (s *TelegramService) handleStatus(c tb.Context) error {
 	if err := s.db.Where("telegram_id = ?", c.Sender().ID).First(&u).Error; err != nil {
 		return c.Send("Your Telegram account is not linked to any VGate account. Use /start <code> from the user portal.")
 	}
-	quota := "Unlimited"
-	if u.QuotaBytes > 0 {
+	quota := "No quota"
+	if u.QuotaBytes == -1 {
+		quota = "Unlimited"
+	} else if u.QuotaBytes > 0 {
 		used := u.UpTotal + u.DownTotal
 		pct := float64(used) / float64(u.QuotaBytes) * 100
 		quota = fmt.Sprintf("%s / %s (%.0f%%)", formatBytes(used), formatBytes(u.QuotaBytes), pct)

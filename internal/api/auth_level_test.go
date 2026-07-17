@@ -3,12 +3,14 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/vgate-project/vgate-manager/internal/model"
+	"github.com/vgate-project/vgate-manager/internal/payment"
 	"github.com/vgate-project/vgate-manager/internal/service"
 )
 
@@ -23,12 +25,13 @@ func TestUserLoginCarriesLevel(t *testing.T) {
 		t.Fatalf("hash: %v", err)
 	}
 	user := model.User{
-		ID:           "ulvl-user",
-		Email:        "ulvl@example.com",
-		Username:     new("ulvl"),
-		Level:        7,
-		PasswordHash: &hash,
-		Enabled:      true,
+		ID:            "ulvl-user",
+		Email:         "ulvl@example.com",
+		Username:      new("ulvl"),
+		Level:         7,
+		PasswordHash:  &hash,
+		Enabled:       true,
+		EmailVerified: true,
 	}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
@@ -85,11 +88,12 @@ func TestUserLoginEmailCaseInsensitive(t *testing.T) {
 
 	userSvc := service.NewUserService(db, nil)
 	user := model.User{
-		ID:       "ci-user",
-		Email:    "MixedCase@example.com", // the create path lowercases this
-		Username: new("ci"),
-		Level:    0,
-		Enabled:  true,
+		ID:            "ci-user",
+		Email:         "MixedCase@example.com", // the create path lowercases this
+		Username:      new("ci"),
+		Level:         0,
+		Enabled:       true,
+		EmailVerified: true,
 	}
 	if err := userSvc.Create(&user, "secret-pass"); err != nil {
 		t.Fatalf("create user: %v", err)
@@ -107,5 +111,59 @@ func TestUserLoginEmailCaseInsensitive(t *testing.T) {
 	// A wrong password still fails.
 	if _, _, _, err := authSvc.UserLogin("MixedCase@example.com", "wrong"); err == nil {
 		t.Error("UserLogin with wrong password succeeded")
+	}
+}
+
+// TestUserLoginAllowsUnverifiedButBlocksPurchase verifies Option A: an enabled
+// but unverified account can log in (so it can reach the dashboard and verify
+// its email), but a self-service purchase is refused until the email is
+// verified. Admins placing orders on the user's behalf are exempt.
+func TestUserLoginAllowsUnverifiedButBlocksPurchase(t *testing.T) {
+	db := setupTestDB(t)
+
+	hash, err := service.NewAuthService(db, "test-secret", time.Hour, time.Hour).HashPassword("secret-pass")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	user := model.User{
+		ID:            "pending-user",
+		Email:         "pending@example.com",
+		Username:      new("pending"),
+		Level:         0,
+		PasswordHash:  &hash,
+		Enabled:       true, // enabled, but not yet verified
+		EmailVerified: false,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	authSvc := service.NewAuthService(db, "test-secret", time.Hour, time.Hour)
+
+	// Login now succeeds even though the email is unverified.
+	if _, _, _, err := authSvc.UserLogin("pending@example.com", "secret-pass"); err != nil {
+		t.Errorf("UserLogin refused unverified user: %v", err)
+	}
+
+	// But a self-service purchase is blocked until the email is verified.
+	orderSvc := service.NewOrderService(db, nil, payment.NewRegistry(nil))
+	pkg := model.TrafficPackage{ID: "tp1", Name: "pkg", QuotaBytes: 1 << 30, Price: 100, ValidityDays: 7, Enabled: true}
+	if err := db.Create(&pkg).Error; err != nil {
+		t.Fatalf("create package: %v", err)
+	}
+	if _, _, err := orderSvc.Create(user.ID, service.CreateOrderParams{Kind: model.OrderKindTraffic, TrafficPackageID: "tp1"}); err == nil {
+		t.Error("Create succeeded for unverified user")
+	} else if !errors.Is(err, service.ErrEmailNotVerified) {
+		t.Errorf("Create returned %v, want ErrEmailNotVerified", err)
+	}
+
+	// After verifying, the gate opens: Create no longer returns
+	// ErrEmailNotVerified (it may then fail at payment-provider resolution,
+	// which is unrelated to email verification).
+	if err := db.Model(&user).Update("email_verified", true).Error; err != nil {
+		t.Fatalf("verify user: %v", err)
+	}
+	if _, _, err := orderSvc.Create(user.ID, service.CreateOrderParams{Kind: model.OrderKindTraffic, TrafficPackageID: "tp1"}); err != nil && errors.Is(err, service.ErrEmailNotVerified) {
+		t.Errorf("Create after verify still returned ErrEmailNotVerified: %v", err)
 	}
 }

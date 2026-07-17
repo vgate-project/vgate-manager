@@ -24,6 +24,8 @@ func writeErr(c *gin.Context, err error) bool {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 	case errors.Is(err, service.ErrPendingOrderExists), errors.Is(err, service.ErrOrderNotPending):
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, service.ErrEmailNotVerified):
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 	case isValidationErr(err):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case isUniqueViolation(err):

@@ -82,8 +82,9 @@ func (s *ServerService) FetchUsers(nodeID string) ([]wire.User, error) {
 	err := s.db.
 		Where("users.id IN ?", userIDs).
 		Where("users.enabled = ?", true).
+		Where("users.email_verified = ?", true).
 		Where("users.expire_at IS NULL OR users.expire_at > ?", now).
-		Where("users.quota_bytes = 0 OR (users.up_total + users.down_total) < users.quota_bytes").
+		Where("users.quota_bytes = -1 OR (users.up_total + users.down_total) < users.quota_bytes").
 		Find(&users).Error
 	if err != nil {
 		return nil, err
@@ -119,6 +120,7 @@ func (s *ServerService) eligibleUserIDs(nodeID string, nodeLevel int) ([]string,
 	err := s.db.Model(&model.User{}).
 		Distinct("users.id").
 		Where("users.enabled = ?", true).
+		Where("users.email_verified = ?", true).
 		Where("users.level >= ? OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.user_id = users.id AND un.node_id = ? AND un.override = ?)", nodeLevel, nodeID, true).
 		Pluck("users.id", &ids).Error
 	return ids, err

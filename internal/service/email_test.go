@@ -52,7 +52,8 @@ func TestEmailServiceSend(t *testing.T) {
 		CfgKeyEmailSMTPPort:     "587",
 		CfgKeyEmailSMTPUser:     "user",
 		CfgKeyEmailSMTPPass:     "pass",
-		CfgKeyEmailSMTPFrom:     "noreply@vgate.io",
+		CfgKeyEmailFrom:         "noreply@vgate.io",
+		CfgKeyEmailFromName:     "VGate",
 		CfgKeyEmailSMTPSecurity: "starttls",
 	}); err != nil {
 		t.Fatalf("seed config: %v", err)
@@ -77,6 +78,9 @@ func TestEmailServiceSend(t *testing.T) {
 	}
 	if sent[0].cfg.Security != "starttls" || sent[0].cfg.Port != 587 {
 		t.Errorf("config not resolved: %+v", sent[0].cfg)
+	}
+	if sent[0].cfg.FromName != "VGate" {
+		t.Errorf("expected FromName VGate, got %q", sent[0].cfg.FromName)
 	}
 
 	// SendAnnouncement.

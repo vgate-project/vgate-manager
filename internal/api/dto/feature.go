@@ -51,6 +51,17 @@ type AdminSendEmailRequest struct {
 	Pinned             bool     `json:"pinned"`
 }
 
+// AdminTestEmailRequest is the body for the admin "send test email" action.
+// To is the recipient; Subject and Body are optional and fall back to sane
+// defaults. The send uses the currently saved email configuration (the
+// database-backed SystemConfig), so the admin should Save first after changing
+// SMTP/Resend settings.
+type AdminTestEmailRequest struct {
+	To      string `json:"to" binding:"required,email"`
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+}
+
 // --- Telegram (admin) ---
 
 // AdminTelegramBroadcastRequest is the body for the admin Telegram broadcast

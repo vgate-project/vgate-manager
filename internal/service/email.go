@@ -8,41 +8,59 @@ import (
 	"net/smtp"
 	"strconv"
 	"time"
+
+	"github.com/resend/resend-go/v3"
 )
 
-// EmailConfig is the resolved SMTP configuration sourced from SystemConfig.
+// EmailConfig is the resolved mail configuration sourced from SystemConfig.
 type EmailConfig struct {
 	Enabled  bool
+	Provider string // "smtp" | "resend" (empty ⇒ "smtp")
 	Host     string
 	Port     int
 	User     string
 	Pass     string
 	From     string
+	FromName string // optional display name, e.g. "VGate" → "VGate" <from>
 	Security string // "none" | "starttls" | "ssl"
+	// Resend-specific settings, used only when Provider == "resend".
+	ResendAPIKey string
+	ResendFrom   string
 }
 
-// SendFunc delivers a single email. The production implementation (sendReal)
-// uses net/smtp; tests inject a fake to avoid network I/O.
+// SendFunc delivers a single email via SMTP. The production implementation
+// (sendReal) uses net/smtp; tests inject a fake to avoid network I/O.
 type SendFunc func(cfg EmailConfig, to, subject, htmlBody string) error
 
+// ResendSendFunc delivers a single email via the Resend API. The production
+// implementation (sendResend) calls resend-go; tests inject a fake.
+type ResendSendFunc func(from, to, subject, htmlBody, apiKey string) error
+
 // EmailService sends transactional mail (registration verification, admin
-// announcements) via SMTP. Configuration lives in SystemConfig so it is
-// editable from the admin UI at runtime; the Sender is injectable for tests.
+// announcements) via the configured backend (SMTP or Resend). Configuration
+// lives in SystemConfig so it is editable from the admin UI at runtime; both
+// senders are injectable for tests.
 type EmailService struct {
-	sysCfg *SystemConfigService
-	send   SendFunc
+	sysCfg     *SystemConfigService
+	send       SendFunc
+	resendSend ResendSendFunc
 }
 
 func NewEmailService(sysCfg *SystemConfigService) *EmailService {
-	return &EmailService{sysCfg: sysCfg, send: sendReal}
+	return &EmailService{sysCfg: sysCfg, send: sendReal, resendSend: sendResend}
 }
 
-// SetSender overrides the delivery function (used by tests).
+// SetSender overrides the SMTP delivery function (used by tests).
 func (s *EmailService) SetSender(f SendFunc) {
 	s.send = f
 }
 
-// GetConfig resolves the SMTP settings from SystemConfig.
+// SetResendSender overrides the Resend delivery function (used by tests).
+func (s *EmailService) SetResendSender(f ResendSendFunc) {
+	s.resendSend = f
+}
+
+// GetConfig resolves the mail settings from SystemConfig.
 func (s *EmailService) GetConfig() (EmailConfig, error) {
 	m, err := s.sysCfg.GetAll()
 	if err != nil {
@@ -53,18 +71,23 @@ func (s *EmailService) GetConfig() (EmailConfig, error) {
 		port = 587
 	}
 	return EmailConfig{
-		Enabled:  m[CfgKeyEmailEnabled] == "true",
-		Host:     m[CfgKeyEmailSMTPHost],
-		Port:     port,
-		User:     m[CfgKeyEmailSMTPUser],
-		Pass:     m[CfgKeyEmailSMTPPass],
-		From:     m[CfgKeyEmailSMTPFrom],
-		Security: m[CfgKeyEmailSMTPSecurity],
+		Enabled:      m[CfgKeyEmailEnabled] == "true",
+		Provider:     m[CfgKeyEmailProvider],
+		Host:         m[CfgKeyEmailSMTPHost],
+		Port:         port,
+		User:         m[CfgKeyEmailSMTPUser],
+		Pass:         m[CfgKeyEmailSMTPPass],
+		From:         m[CfgKeyEmailFrom],
+		FromName:     m[CfgKeyEmailFromName],
+		Security:     m[CfgKeyEmailSMTPSecurity],
+		ResendAPIKey: m[CfgKeyEmailResendAPIKey],
+		ResendFrom:   m[CfgKeyEmailFrom],
 	}, nil
 }
 
-// Send delivers an HTML email to a single recipient. It is a no-op error when
-// email is disabled or not fully configured.
+// Send delivers an HTML email to a single recipient, using the backend
+// selected by email.provider. It is a no-op error when email is disabled or
+// the chosen backend is not fully configured.
 func (s *EmailService) Send(to, subject, htmlBody string) error {
 	if to == "" {
 		return errors.New("email: empty recipient")
@@ -73,8 +96,18 @@ func (s *EmailService) Send(to, subject, htmlBody string) error {
 	if err != nil {
 		return err
 	}
-	if !cfg.Enabled || cfg.Host == "" || cfg.From == "" {
-		return errors.New("email is not configured (set email.enabled=true and SMTP host/from)")
+	if !cfg.Enabled {
+		return errors.New("email is not configured (set email.enabled=true)")
+	}
+	if cfg.Provider == "resend" {
+		if cfg.ResendAPIKey == "" || cfg.ResendFrom == "" {
+			return errors.New("resend email is not configured (set email.resend_api_key and email.from)")
+		}
+		return s.resendSend(formatFrom(cfg.FromName, cfg.ResendFrom), to, subject, htmlBody, cfg.ResendAPIKey)
+	}
+	// Default backend: SMTP.
+	if cfg.Host == "" || cfg.From == "" {
+		return errors.New("SMTP email is not configured (set email.smtp_host and email.from)")
 	}
 	return s.send(cfg, to, subject, htmlBody)
 }
@@ -105,7 +138,22 @@ func (s *EmailService) SendAnnouncement(to, title, content string) error {
 	return s.Send(to, subject, html)
 }
 
+// formatFrom renders an RFC 5322 display sender: "Name" <addr> when a name is
+// set, otherwise the bare address. It is applied only to the From: header and
+// the Resend From field; the SMTP MAIL FROM command still uses the bare
+// address (see sendReal).
+func formatFrom(name, addr string) string {
+	if addr == "" {
+		return name
+	}
+	if name == "" {
+		return addr
+	}
+	return fmt.Sprintf("%s <%s>", name, addr)
+}
+
 // buildMessage assembles an RFC 5322 message with a text/html body.
+// from is the fully formatted display sender (e.g. "VGate" <noreply@vgate.io>).
 func buildMessage(from, to, subject, htmlBody string) []byte {
 	now := time.Now().Format(time.RFC1123Z)
 	msg := "From: " + from + "\r\n" +
@@ -121,7 +169,7 @@ func buildMessage(from, to, subject, htmlBody string) []byte {
 
 // sendReal delivers mail via net/smtp, supporting none/starttls/ssl transports.
 func sendReal(cfg EmailConfig, to, subject, htmlBody string) error {
-	msg := buildMessage(cfg.From, to, subject, htmlBody)
+	msg := buildMessage(formatFrom(cfg.FromName, cfg.From), to, subject, htmlBody)
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 
 	var c *smtp.Client
@@ -168,4 +216,19 @@ func sendReal(cfg EmailConfig, to, subject, htmlBody string) error {
 		return fmt.Errorf("smtp write: %w", err)
 	}
 	return w.Close()
+}
+
+// sendResend delivers mail via the Resend REST API (resend-go/v3).
+func sendResend(from, to, subject, htmlBody, apiKey string) error {
+	client := resend.NewClient(apiKey)
+	params := &resend.SendEmailRequest{
+		From:    from,
+		To:      []string{to},
+		Subject: subject,
+		Html:    htmlBody,
+	}
+	if _, err := client.Emails.Send(params); err != nil {
+		return fmt.Errorf("resend send: %w", err)
+	}
+	return nil
 }

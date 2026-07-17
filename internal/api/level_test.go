@@ -16,7 +16,7 @@ import (
 func TestNodeUserLevelGate(t *testing.T) {
 	db := setupTestDB(t)
 
-	user := model.User{ID: "u-level", Email: "lvl@example.com", SubToken: "lvltok", Level: 1, Enabled: true}
+	user := model.User{ID: "u-level", Email: "lvl@example.com", SubToken: "lvltok", Level: 1, QuotaBytes: -1, Enabled: true, EmailVerified: true}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
