@@ -105,6 +105,13 @@ Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
 - `POST /user/change-password`
 - `GET/POST/DELETE /user/invites`, `GET /user/invites/status`
 - `GET  /user/announcements`
+- **Support tickets** — users open, reply to, and close their own tickets, and pick
+  how they are notified of admin replies:
+  `GET/POST /user/tickets`, `GET /user/tickets/:id`, `POST /user/tickets/:id/messages`,
+  `POST /user/tickets/:id/close`
+- **Telegram link (self-service)** — bind/unbind a personal Telegram account and toggle
+  announcement delivery: `GET /user/telegram/status`, `POST /user/telegram/bind`,
+  `POST /user/telegram/unbind`, `PUT /user/telegram/notify`
 - `POST /api/v1/billing/:platform/notify` — async payment callback (public, `POST`) for `alipay`, `wechat`, or `stripe`
 
 **Node (data plane)**
@@ -130,12 +137,55 @@ Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
 - Email: `POST /admin/email/send`
 - Orders: `POST /admin/orders`, `GET /admin/orders`, `GET /admin/orders/:id`
 - Traffic packages: `GET/POST/PUT/DELETE /admin/traffic-packages[/:id]`
+- Tickets: `GET/POST /admin/tickets`, `GET /admin/tickets/:id`,
+  `POST /admin/tickets/:id/messages`, `PUT /admin/tickets/:id/status`
+- Telegram: `POST /admin/telegram/broadcast` (send to all linked users), and the
+  admin self-link `GET/POST /admin/me/telegram/{status,bind,unbind}`
 - Super-admin only: `GET/POST /admin/admins`, `PUT /admin/admins/:id/password`,
   plan CRUD (`GET/POST/PUT/DELETE /admin/plans/:id`, `GET /admin/plans`)
 
 **Health**
 
 - `GET /health`
+
+## Telegram integration
+
+The manager can run a Telegram bot that delivers alerts and announcements and lets
+users and admins bind their personal accounts for ticket notifications. It is enabled
+and configured via DB-backed system config (`TelegramConfig`):
+
+| Key                           | Default  | Meaning                                                       |
+|-------------------------------|----------|---------------------------------------------------------------|
+| `telegram.enabled`            | `false`  | Master switch for the bot.                                    |
+| `telegram.bot_token`          | `""`     | BotFather token (secret).                                    |
+| `telegram.bot_username`       | `""`     | Bot `@username`, used to build `/start` deep links.          |
+| `telegram.user_bot_enabled`   | `false`  | Allow users to self-bind via deep link.                     |
+| `telegram.alert_ticket`       | `false`  | Notify linked admins on new tickets / user replies.         |
+| `telegram.alert_announcement` | `false`  | Forward announcements to linked users.                      |
+| `telegram.alert_order_paid`   | `false`  | Notify on paid orders (and other alert toggles).            |
+
+Binding uses a `/start <code>` deep link. The code carries a `u_` (user) or `a_`
+(admin) prefix so the bot routes the bind to the right account: admins link from
+**Settings → Telegram** in the admin console, users from **Settings** in the portal.
+
+When an admin replies to a ticket, the owner is notified on the channel they chose
+when opening it (`none` / `email` / `telegram`). Every admin with a linked Telegram
+account also receives an alert on each new ticket and user reply.
+
+## Support tickets
+
+Tickets are a lightweight support channel between users and admins.
+
+- **Users** open tickets (`POST /user/tickets`), reply, and can **close their own
+  ticket** (`POST /user/tickets/:id/close`). When opening one they pick a notification
+  method (`notify_method`: `none` | `email` | `telegram`); if omitted it defaults to
+  `telegram` when their account is Telegram-linked, else `none`.
+- **Admins** list/view all tickets, reply (`POST /admin/tickets/:id/messages`), and
+  move them through a status machine `open → in_progress → resolved → closed`
+  (`PUT /admin/tickets/:id/status`). A later user reply reopens a closed ticket.
+
+Admins can also broadcast a message to every linked Telegram user via
+`POST /admin/telegram/broadcast` (optionally also published as an announcement).
 
 ## CORS
 
