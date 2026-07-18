@@ -546,12 +546,19 @@ func (a *AuthService) VerifyEmail(token string) error {
 	if err := a.db.Where("token = ?", token).First(&ev).Error; err != nil {
 		return errors.New("invalid verification token")
 	}
-	if !ev.Valid(time.Now()) {
-		return errors.New("verification token is invalid or expired")
-	}
 	var user model.User
 	if err := a.db.First(&user, "id = ?", ev.UserID).Error; err != nil {
 		return errors.New("user not found")
+	}
+	// Idempotent: if the account is already verified, treat a repeated or
+	// already-consumed token as success rather than "invalid". This avoids
+	// confusing "Verification failed" messages on the client when the user
+	// refreshes the page or the auto-POST fires more than once.
+	if user.EmailVerified {
+		return nil
+	}
+	if !ev.Valid(time.Now()) {
+		return errors.New("verification token is invalid or expired")
 	}
 	if err := a.db.Model(&user).Updates(map[string]any{
 		"enabled":        true,
