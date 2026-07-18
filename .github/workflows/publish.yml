@@ -4,9 +4,10 @@ name: Publish
 # `manager/` is its own git repository, so the repository root here is the manager
 # sources and the Docker build context `.` is correct.
 #
-# On push to `main` it builds the binaries + Docker image, publishes a
-# non-prerelease GitHub *release* tagged `dev-<short-sha>`, and uploads the
-# artifacts to that release. The Docker image is also tagged `dev-<short-sha>`.
+# On push to `main` it builds the binaries + Docker image, pushes the `dev`
+# Docker tag, and updates a single rolling non-prerelease GitHub *dev* release
+# in place (its tag is force-moved to the latest commit). Only one `dev` release
+# exists at a time. The Docker image is also tagged `dev`.
 #
 # Pushing a tag starting with `v` (e.g. `v1.2.3`) publishes a *formal release*
 # instead: the Docker image is also tagged `latest`, and a non-prerelease GitHub
@@ -50,13 +51,14 @@ jobs:
             echo "release_name=${TAG}" >> "$GITHUB_OUTPUT"
             echo "version=${TAG}" >> "$GITHUB_OUTPUT"
           else
-            # Push to main / manual dispatch: publish a non-prerelease GitHub
-            # release tagged dev-<short-sha> (unique per commit, so no reuse
-            # or force-move needed).
-            TAG="dev-${GITHUB_SHA::7}"
+            # Push to main / manual dispatch: a single rolling `dev` release is
+            # updated in place (tag force-moved to the latest commit).
+            # Non-prerelease. The build version still records dev-<short-sha>
+            # so artifacts identify the exact commit.
+            TAG="dev"
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "release_name=${TAG}" >> "$GITHUB_OUTPUT"
-            echo "version=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "release_name=dev" >> "$GITHUB_OUTPUT"
+            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
@@ -150,19 +152,66 @@ jobs:
     needs: [prepare, binaries]
     runs-on: ubuntu-latest
     steps:
+      # The rolling `dev` release reuses one fixed tag. Force-move the tag to the
+      # current commit so the release page shows the right commit hash.
+      # Skipped for formal v* releases — those must never be force-pushed.
+      - name: Checkout (needed to force-move tag)
+        if: needs.prepare.outputs.tag == 'dev'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Move dev tag to current commit
+        if: needs.prepare.outputs.tag == 'dev'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          git tag -f "$TAG" "$GITHUB_SHA"
+          git push -f origin "$TAG"
+
       - name: Download binaries
         uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
-      - name: Publish GitHub release
+      - name: Check if dev release already exists
+        id: rel
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            gh release view "$TAG" --json body -q .body > notes.md
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            : > notes.md
+          fi
+
+      # First push: let GitHub generate the notes once (produces the changelog link).
+      - name: Create dev release (first time)
+        if: steps.rel.outputs.exists == 'false'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ${{ needs.prepare.outputs.release_name }}
           prerelease: false
           generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+
+      # Later pushes: reuse the previously generated notes (no changelog churn).
+      - name: Update dev release (keep notes)
+        if: steps.rel.outputs.exists == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.release_name }}
+          prerelease: false
+          generate_release_notes: false
+          body_path: notes.md
           files: |
             dist/*.tar.gz
             dist/*.zip
