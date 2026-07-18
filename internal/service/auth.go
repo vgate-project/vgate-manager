@@ -599,9 +599,13 @@ func (a *AuthService) ResendVerification(email string) error {
 	if a.emailSvc != nil {
 		link := a.buildVerifyLink(vtok)
 		if serr := a.emailSvc.SendVerification(email, link, vtok); serr != nil {
-			// Best-effort: the pending account + valid token still let the user
-			// verify later; surface via log rather than failing the request.
+			// Unlike registration (a best-effort side effect of signup), this
+			// is a user-initiated resend: return the error so the client can
+			// tell the user the email failed instead of falsely reporting a
+			// 200 "sent". The pending account + valid token remain, so the
+			// user can still retry later.
 			log.Warnf("resend-verification: failed to send email to %s: %v", email, serr)
+			return fmt.Errorf("failed to send verification email: %w", serr)
 		}
 	}
 	return nil
