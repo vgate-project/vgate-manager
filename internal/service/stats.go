@@ -39,7 +39,6 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 	prevDayAgo := now.Add(-48 * time.Hour)
 	weekLater := now.Add(7 * 24 * time.Hour)
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	lastSeenCutoff := now.Add(-model.NodeOnlineWindow)
 
 	// User stats: total count + active in the last 24h (one query).
 	var userStats struct {
@@ -54,16 +53,11 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 		return nil, err
 	}
 
-	// Node stats: total count + online (last_seen within 2 min, one query).
-	var nodeStats struct {
-		Count  int64
-		Online int64
-	}
-	if err := s.db.Model(&model.Node{}).Select(
-		"COUNT(*) AS count, "+
-			"COUNT(CASE WHEN last_seen_at IS NOT NULL AND last_seen_at >= ? THEN 1 END) AS online",
-		lastSeenCutoff,
-	).Scan(&nodeStats).Error; err != nil {
+	// Node stats: total count + online. Virtual child nodes never poll, so we
+	// attribute their parent's liveness (consistent with the node list / user
+	// node list, which both call hydrateVirtualOnline).
+	nodeCount, nodeOnline, err := s.nodeCounts()
+	if err != nil {
 		return nil, err
 	}
 
@@ -180,8 +174,8 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 	}
 
 	return &dto.OverviewStats{
-		NodeCount:      nodeStats.Count,
-		NodeOnline:     nodeStats.Online,
+		NodeCount:      nodeCount,
+		NodeOnline:     nodeOnline,
 		UserCount:      userStats.Count,
 		OnlineUsers24h: userStats.Online24h,
 		Up24h:          up24h,
@@ -204,4 +198,27 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 		OrderCount24hPrev:  orderPrev.Count,
 		OrderAmount24hPrev: orderPrev.Total,
 	}, nil
+}
+
+// nodeCounts returns the total number of nodes and how many are currently
+// online. Virtual child nodes never poll the manager, so they inherit their
+// parent's liveness via hydrateVirtualOnline — the same semantics the node
+// list and user node list use. A virtual node is online exactly when its real
+// parent is (and offline when the parent is missing or stale).
+func (s *StatsService) nodeCounts() (total, online int64, err error) {
+	var nodes []*model.Node
+	if err := s.db.Model(&model.Node{}).
+		Select("id", "parent_id", "last_seen_at", "enabled").
+		Find(&nodes).Error; err != nil {
+		return 0, 0, err
+	}
+	if err := hydrateVirtualOnline(s.db, nodes); err != nil {
+		return 0, 0, err
+	}
+	for _, n := range nodes {
+		if n.IsOnline() {
+			online++
+		}
+	}
+	return int64(len(nodes)), online, nil
 }

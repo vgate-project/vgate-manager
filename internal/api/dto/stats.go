@@ -21,7 +21,7 @@ type UserNodeView struct {
 type OverviewStats struct {
 	// Nodes
 	NodeCount  int64 `json:"node_count"`
-	NodeOnline int64 `json:"node_online"` // last_seen within 2 min
+	NodeOnline int64 `json:"node_online"` // online if last_seen within NodeOnlineWindow (5 min); virtual nodes inherit parent liveness
 	// Users
 	UserCount      int64 `json:"user_count"`
 	OnlineUsers24h int64 `json:"online_users_24h"`
