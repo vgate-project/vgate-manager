@@ -4,9 +4,9 @@ name: Publish
 # `manager/` is its own git repository, so the repository root here is the manager
 # sources and the Docker build context `.` is correct.
 #
-# On push to `main` it builds the binaries + Docker image and pushes the `dev`
-# Docker tag, and uploads build artifacts — but it does NOT publish any GitHub
-# release/pre-release.
+# On push to `main` it builds the binaries + Docker image, publishes a
+# non-prerelease GitHub *release* tagged `dev-<short-sha>`, and uploads the
+# artifacts to that release. The Docker image is also tagged `dev-<short-sha>`.
 #
 # Pushing a tag starting with `v` (e.g. `v1.2.3`) publishes a *formal release*
 # instead: the Docker image is also tagged `latest`, and a non-prerelease GitHub
@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -50,12 +50,13 @@ jobs:
             echo "release_name=${TAG}" >> "$GITHUB_OUTPUT"
             echo "version=${TAG}" >> "$GITHUB_OUTPUT"
           else
-            # Push to main / manual dispatch: no GitHub release is published.
-            # Build + push the `dev` Docker image and upload artifacts only.
-            TAG="dev"
+            # Push to main / manual dispatch: publish a non-prerelease GitHub
+            # release tagged dev-<short-sha> (unique per commit, so no reuse
+            # or force-move needed).
+            TAG="dev-${GITHUB_SHA::7}"
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "release_name=" >> "$GITHUB_OUTPUT"
-            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "release_name=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "version=${TAG}" >> "$GITHUB_OUTPUT"
           fi
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
@@ -87,8 +88,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/vgate-manager
           tags: |
             type=sha
-            type=raw,value=dev,enable=${{ needs.prepare.outputs.is_prerelease == 'true' }}
-            type=raw,value=latest,enable=${{ needs.prepare.outputs.is_prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ startsWith(needs.prepare.outputs.tag, 'v') }}
             type=raw,value=${{ needs.prepare.outputs.tag }}
 
       - name: Build and push
@@ -145,3 +145,24 @@ jobs:
             *.tar.gz
             *.zip
           if-no-files-found: error
+
+  release:
+    needs: [prepare, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.release_name }}
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
