@@ -5,12 +5,12 @@ name: Publish
 # sources and the Docker build context `.` is correct.
 #
 # On push to `main` it builds the binaries + Docker image, pushes the `dev`
-# Docker tag, and updates a single rolling non-prerelease GitHub *dev* release
-# in place (its tag is force-moved to the latest commit). Only one `dev` release
-# exists at a time. The Docker image is also tagged `dev`.
+# Docker tag, and updates a single rolling GitHub *dev* **pre-release** in place
+# (its tag is force-moved to the latest commit). Only one `dev` pre-release exists
+# at a time. The Docker image is also tagged `dev` (but never `latest`).
 #
 # Pushing a tag starting with `v` (e.g. `v1.2.3`) publishes a *formal release*
-# instead: the Docker image is also tagged `latest`, and a non-prerelease GitHub
+# instead: the Docker image is tagged `latest`, and a non-prerelease GitHub
 # release is created from the tag.
 
 on:
@@ -196,7 +196,7 @@ jobs:
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ${{ needs.prepare.outputs.release_name }}
-          prerelease: false
+          prerelease: true
           generate_release_notes: true
           files: |
             dist/*.tar.gz
@@ -209,7 +209,7 @@ jobs:
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ${{ needs.prepare.outputs.release_name }}
-          prerelease: false
+          prerelease: true
           generate_release_notes: false
           body_path: notes.md
           files: |
