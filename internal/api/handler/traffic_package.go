@@ -54,6 +54,7 @@ func (h *TrafficPackageHandler) Create(c *gin.Context) {
 	}
 	pkg := &model.TrafficPackage{
 		Name:         req.Name,
+		DisplayName:  req.DisplayName,
 		Price:        req.Price,
 		QuotaBytes:   req.QuotaBytes,
 		ValidityDays: req.ValidityDays,
@@ -81,6 +82,7 @@ func (h *TrafficPackageHandler) Update(c *gin.Context) {
 		return
 	}
 	pkg.Name = req.Name
+	pkg.DisplayName = req.DisplayName
 	pkg.Price = req.Price
 	pkg.QuotaBytes = req.QuotaBytes
 	pkg.ValidityDays = req.ValidityDays

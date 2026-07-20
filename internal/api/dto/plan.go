@@ -19,6 +19,7 @@ type PlanPriceInput struct {
 // true on create).
 type PlanRequest struct {
 	Name         string           `json:"name" binding:"required"`
+	DisplayName  string           `json:"display_name"` // optional gateway product name; empty ⇒ template/default
 	Prices       []PlanPriceInput `json:"prices" binding:"required,min=1"`
 	QuotaBytes      int64            `json:"quota_bytes"`
 	Description     string           `json:"description"`

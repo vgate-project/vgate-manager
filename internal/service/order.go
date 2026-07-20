@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,41 @@ func NewOrderService(db *gorm.DB, sys *SystemConfigService, payments *payment.Re
 // an admin alert (when the admin enabled the order_paid alert).
 func (s *OrderService) SetTelegramService(svc *TelegramService) {
 	s.telegramSvc = svc
+}
+
+// resolvePaymentSubject picks the product name shown on the payment gateway,
+// with the following precedence:
+//  1. the per-product DisplayName (set on the plan or traffic package);
+//  2. the global template payment.product_name_template (rendered with
+//     placeholders);
+//  3. the built-in default subject.
+func (s *OrderService) resolvePaymentSubject(kind, productName, period string, amountCents int64, displayName string) (string, error) {
+	if displayName != "" {
+		return displayName, nil
+	}
+	if tmpl, err := s.sys.Get(CfgKeyPaymentProductName); err == nil && tmpl != "" {
+		return renderProductTemplate(tmpl, productName, period, amountCents), nil
+	}
+	switch kind {
+	case model.OrderKindTraffic:
+		return productName, nil
+	case model.OrderKindReset:
+		return productName + " traffic reset", nil
+	default: // plan
+		return period + " plan", nil
+	}
+}
+
+// renderProductTemplate substitutes the supported placeholders in the global
+// product-name template. {plan} = product name, {period} = billing period
+// (empty for traffic/reset), {amount} = order amount in yuan (2 decimals).
+func renderProductTemplate(tmpl, productName, period string, amountCents int64) string {
+	amount := strconv.FormatFloat(float64(amountCents)/100.0, 'f', 2, 64)
+	return strings.NewReplacer(
+		"{plan}", productName,
+		"{period}", period,
+		"{amount}", amount,
+	).Replace(tmpl)
 }
 
 // Create builds an order for the given user and returns a PayDirective telling
@@ -151,7 +187,14 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		order.Period = price.Period
 		order.DurationDays = price.DurationDays
 		order.Amount = price.Price
-		subject = price.Period + " plan"
+		plan, err := s.planSvc.Get(price.PlanID)
+		if err != nil {
+			return nil, nil, err
+		}
+		subject, err = s.resolvePaymentSubject(model.OrderKindPlan, plan.Name, price.Period, order.Amount, plan.DisplayName)
+		if err != nil {
+			return nil, nil, err
+		}
 	case model.OrderKindTraffic:
 		pkg, err := s.trafficSvc.loadEnabled(p.TrafficPackageID)
 		if err != nil {
@@ -160,7 +203,10 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		order.TrafficPackageID = pkg.ID
 		order.ValidityDays = pkg.ValidityDays
 		order.Amount = pkg.Price
-		subject = pkg.Name
+		subject, err = s.resolvePaymentSubject(model.OrderKindTraffic, pkg.Name, "", order.Amount, pkg.DisplayName)
+		if err != nil {
+			return nil, nil, err
+		}
 	case model.OrderKindReset:
 		plan, err := s.planSvc.loadEnabledPlan(p.PlanID)
 		if err != nil {
@@ -178,7 +224,10 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		}
 		order.PlanID = plan.ID
 		order.Amount = plan.ResetPrice
-		subject = plan.Name + " traffic reset"
+		subject, err = s.resolvePaymentSubject(model.OrderKindReset, plan.Name, "", order.Amount, plan.DisplayName)
+		if err != nil {
+			return nil, nil, err
+		}
 	default:
 		return nil, nil, ErrInvalidOrderKind
 	}
@@ -469,13 +518,23 @@ func (s *OrderService) PayMine(id, userID string) (*model.Order, *payment.PayDir
 		if err != nil {
 			return nil, nil, err
 		}
-		subject = pkg.Name
+		subject, err = s.resolvePaymentSubject(model.OrderKindTraffic, pkg.Name, "", order.Amount, pkg.DisplayName)
+		if err != nil {
+			return nil, nil, err
+		}
 	default:
 		price, err := s.planSvc.loadEnabledPlanPrice(order.PlanID, order.PlanPriceID)
 		if err != nil {
 			return nil, nil, err
 		}
-		subject = price.Period + " plan"
+		plan, err := s.planSvc.Get(price.PlanID)
+		if err != nil {
+			return nil, nil, err
+		}
+		subject, err = s.resolvePaymentSubject(model.OrderKindPlan, plan.Name, price.Period, order.Amount, plan.DisplayName)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	prov, err := s.payments.Get(order.Platform)
 	if err != nil {

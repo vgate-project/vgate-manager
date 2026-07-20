@@ -11,6 +11,10 @@ import "time"
 type TrafficPackage struct {
 	ID           string    `gorm:"primaryKey;size:36" json:"id"`
 	Name         string    `gorm:"size:128;not null" json:"name"`
+	// DisplayName is an optional product name pushed to the payment gateway
+	// instead of the built-in default (the package Name). Empty ⇒ the global
+	// payment.product_name_template (then the built-in default) is used.
+	DisplayName string    `gorm:"size:128" json:"display_name"`
 	Price        int64     `gorm:"not null" json:"price"` // cents (server truth)
 	QuotaBytes   int64     `gorm:"not null" json:"quota_bytes"`
 	ValidityDays int       `gorm:"default:0" json:"validity_days"` // 0 = no expiry extension

@@ -56,6 +56,7 @@ func (h *PlanHandler) Create(c *gin.Context) {
 	}
 	plan := &model.Plan{
 		Name:             req.Name,
+		DisplayName:      req.DisplayName,
 		QuotaBytes:       req.QuotaBytes,
 		Description:      req.Description,
 		Level:            req.Level,
@@ -87,6 +88,7 @@ func (h *PlanHandler) Update(c *gin.Context) {
 		return
 	}
 	plan.Name = req.Name
+	plan.DisplayName = req.DisplayName
 	plan.QuotaBytes = req.QuotaBytes
 	plan.Description = req.Description
 	plan.Level = req.Level

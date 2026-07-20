@@ -99,6 +99,14 @@ const (
 	// request origin is used as the fallback. Stored as a JSON array string.
 	CfgKeySubBaseURLs = "sub.base_urls"
 
+	// CfgKeyPaymentProductName is the optional fallback template for the
+	// product name pushed to the payment gateway. It supports the placeholders
+	// {plan} (plan/package name), {period} (billing period, empty for
+	// traffic/reset) and {amount} (order amount in yuan). An empty/absent value
+	// falls back to the built-in default subject. A plan or traffic package
+	// with its own DisplayName takes precedence over this template.
+	CfgKeyPaymentProductName = "payment.product_name_template"
+
 	// Telegram bot config keys. All settings are stored as SystemConfig rows so
 	// an admin can configure the bot at runtime without restarting. The bot
 	// token is the only secret here and is stored in plaintext at the same
@@ -495,6 +503,7 @@ func (s *SystemConfigService) defaultConfigRows() map[string]string {
 		CfgKeyCaptchaTurnstileSiteKey:    "",
 		CfgKeyCaptchaTurnstileSecretKey:  "",
 		CfgKeySubBaseURLs:                "[]",
+		CfgKeyPaymentProductName:        "",
 		CfgKeyTelegramEnabled:            "false",
 		CfgKeyTelegramBotToken:           "",
 		CfgKeyTelegramBotUsername:        "",
