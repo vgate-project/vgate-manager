@@ -26,17 +26,19 @@ import (
 )
 
 var cfgFile string
+var captchaEnabled bool
 
 var rootCmd = &cobra.Command{
 	Use:   "vgate-manager",
 	Short: "vgate manager API server",
 	Run: func(cmd *cobra.Command, args []string) {
-		run()
+		run(cmd)
 	},
 }
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ./config.yml)")
+	rootCmd.PersistentFlags().BoolVar(&captchaEnabled, "captcha-enabled", false, "enable Cloudflare Turnstile captcha on auth endpoints (overrides DB setting only when explicitly set)")
 }
 
 // Execute is the single entry point called from main().
@@ -47,7 +49,7 @@ func Execute() {
 	}
 }
 
-func run() {
+func run(cmd *cobra.Command) {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
@@ -103,6 +105,23 @@ func run() {
 	}
 	// Re-apply logger now that DB overrides for log.level / log.format are known.
 	applyLogger(merged.Log)
+
+	// An explicit --captcha-enabled flag overrides the DB-backed captcha switch
+	// at startup; when the flag is omitted we leave the runtime/existing DB
+	// value untouched so an admin can still toggle it live.
+	if cmd.PersistentFlags().Changed("captcha-enabled") {
+		if err := sysCfg.SetAll(map[string]string{
+			service.CfgKeyCaptchaTurnstileEnabled: strconv.FormatBool(captchaEnabled),
+		}); err != nil {
+			log.Warnf("failed to apply --captcha-enabled flag: %v", err)
+		} else {
+			state := "disabled"
+			if captchaEnabled {
+				state = "enabled"
+			}
+			log.Infof("captcha (Turnstile) %s via --captcha-enabled flag", state)
+		}
+	}
 
 	// Auth service + first-run admin bootstrap (config-seeded, idempotent).
 	authSvc := service.NewAuthService(db, merged.JWT.Secret,

@@ -50,6 +50,31 @@ Create additional admin accounts from the command line:
 `--role` is one of `admin` (default) or `super_admin`. Super admins have access to
 the `/admins` and plan-management endpoints.
 
+### CLI flags
+
+| Flag                  | Type   | Default | Description                                                                                                   |
+|-----------------------|--------|---------|---------------------------------------------------------------------------------------------------------------|
+| `--config`            | string | `./config.yml` | Path to the config file.                                                                              |
+| `--captcha-enabled`   | bool   | `false` | Enable Cloudflare Turnstile captcha on auth endpoints (`/user/login`, `/user/register`, `/user/verify-email`, `/user/resend-verification`, `/admin/login`). |
+
+The captcha toggle is normally a DB-backed, hot-reloadable setting
+(`captcha.turnstile_enabled`) that an admin flips from the admin console. The
+`--captcha-enabled` flag lets you force that switch at startup:
+
+```bash
+# turn captcha on at startup
+./vgate-manager --captcha-enabled
+
+# turn it off at startup
+./vgate-manager --captcha-enabled=false
+```
+
+When the flag is **omitted**, the existing DB value is left untouched, so an admin
+can still toggle captcha live at runtime. When the flag **is** passed (either
+`true` or `false`), it overrides the DB value on each start. The flag only gates
+the Turnstile challenge — the widget's `captcha.turnstile_site_key` and
+`captcha.turnstile_secret_key` are still configured via system-config.
+
 ## Configuration (`config.yml`)
 
 Two kinds of settings exist:
