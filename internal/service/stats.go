@@ -47,7 +47,7 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 	}
 	if err := s.db.Model(&model.User{}).Select(
 		"COUNT(*) AS count, "+
-			"COUNT(CASE WHEN last_traffic_at IS NOT NULL AND last_traffic_at >= ? THEN 1 END) AS online_24h",
+			"COUNT(CASE WHEN last_traffic_at IS NOT NULL AND last_traffic_at >= ? THEN 1 END) AS online24h",
 		dayAgo,
 	).Scan(&userStats).Error; err != nil {
 		return nil, err
@@ -122,7 +122,7 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 		NewYesterday   int64
 	}
 	if err := s.db.Model(&model.User{}).Select(
-		"COUNT(CASE WHEN expire_at IS NOT NULL AND expire_at <= ? THEN 1 END) AS expiring_7d, "+
+		"COUNT(CASE WHEN expire_at IS NOT NULL AND expire_at <= ? THEN 1 END) AS expiring7d, "+
 			"COUNT(CASE WHEN quota_bytes > 0 AND (up_total + down_total) >= quota_bytes THEN 1 END) AS quota_exhausted, "+
 			"COUNT(CASE WHEN email_verified = false THEN 1 END) AS unverified, "+
 			"COUNT(CASE WHEN created_at >= ? THEN 1 END) AS new_today, "+
