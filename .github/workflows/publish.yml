@@ -62,7 +62,9 @@ jobs:
             # keeps the stable, force-updated `dev` tag. The build version records
             # dev-<date>-<short-sha> so artifacts identify the exact commit.
             DAY="$(date -u +%Y-%m-%d)"
-            echo "tag=dev" >> "$GITHUB_OUTPUT"
+            # Set the shell variable (not the output) so the `echo "tag=${TAG}"`
+            # at the end of the step emits `dev` for non-release pushes.
+            TAG=dev
             echo "release_tag=dev-${DAY}" >> "$GITHUB_OUTPUT"
             echo "release_name=dev-${DAY}" >> "$GITHUB_OUTPUT"
             echo "version=dev-${DAY}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
