@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -188,6 +189,93 @@ func (s *UserService) Delete(id string) error {
 		}
 		return tx.Delete(&model.User{}, "id = ?", id).Error
 	})
+}
+
+// ZombieFilter describes the criteria a user must satisfy to be considered a
+// "zombie" (a cleanup candidate). A user matches only if it satisfies EVERY
+// selected criterion — the filter is an AND, not an OR.
+type ZombieFilter struct {
+	NeverUsedProxy bool // (up_total + down_total) = 0 AND last_traffic_at IS NULL
+	EmailUnverified bool // email_verified = false
+	NoPaidOrders bool // no order with status = 'paid'
+	InactiveDays int // last_traffic_at older than N days (or NULL); 0 disables
+	// MinAccountDays keeps accounts younger than N days out of the cleanup so
+	// freshly registered users are never deleted. 0 disables the guard.
+	MinAccountDays int
+	// ProtectActiveSubs excludes users with a still-valid subscription
+	// (expire_at in the future) so paying users are never bulk-deleted.
+	ProtectActiveSubs bool
+}
+
+// applyZombieFilter attaches the WHERE clause shared by CountZombies and
+// DeleteZombies. The caller decides whether to count, list, or delete the IDs
+// that survive the filter.
+func (s *UserService) applyZombieFilter(q *gorm.DB, f ZombieFilter) *gorm.DB {
+	if f.NeverUsedProxy {
+		q = q.Where("(up_total + down_total) = ? AND last_traffic_at IS NULL", 0)
+	}
+	if f.EmailUnverified {
+		q = q.Where("email_verified = ?", false)
+	}
+	if f.NoPaidOrders {
+		q = q.Where("NOT EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id AND orders.status = ?)", model.OrderStatusPaid)
+	}
+	if f.InactiveDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -f.InactiveDays)
+		q = q.Where("last_traffic_at IS NULL OR last_traffic_at < ?", cutoff)
+	}
+	if f.MinAccountDays > 0 {
+		// created_at <= now - N days ⇒ account is at least N days old. This is
+		// an exclusion guard, independent of the positive criteria above, so a
+		// brand-new signup can never be cleaned up.
+		cutoff := time.Now().AddDate(0, 0, -f.MinAccountDays)
+		q = q.Where("created_at <= ?", cutoff)
+	}
+	if f.ProtectActiveSubs {
+		// Exclude users whose subscription is still valid: keep only those with
+		// no expiry (NULL) or an expiry that has already passed. A paying user
+		// who hasn't connected yet (last_traffic_at NULL) stays protected.
+		q = q.Where("expire_at IS NULL OR expire_at <= ?", time.Now())
+	}
+	return q
+}
+
+// CountZombies returns how many users match the given zombie criteria.
+func (s *UserService) CountZombies(f ZombieFilter) (int64, error) {
+	q := s.db.Model(&model.User{})
+	q = s.applyZombieFilter(q, f)
+	var count int64
+	err := q.Count(&count).Error
+	return count, err
+}
+
+// DeleteZombies removes every user matching the given zombie criteria, along
+// with their user_node assignments (mirroring Delete). It returns the number
+// of users removed. The whole operation runs in a single transaction.
+func (s *UserService) DeleteZombies(f ZombieFilter) (int64, error) {
+	var deleted int64
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var ids []string
+		q := tx.Model(&model.User{}).Select("id")
+		q = s.applyZombieFilter(q, f)
+		if err := q.Find(&ids).Error; err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			deleted = 0
+			return nil
+		}
+		if err := tx.Where("user_id IN ?", ids).Delete(&model.UserNode{}).Error; err != nil {
+			return err
+		}
+		res := tx.Where("id IN ?", ids).Delete(&model.User{})
+		if res.Error != nil {
+			return res.Error
+		}
+		deleted = res.RowsAffected
+		return nil
+	})
+	return deleted, err
 }
 
 func (s *UserService) RegenerateSubToken(id string) (string, error) {

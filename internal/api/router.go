@@ -324,6 +324,10 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		// System config is super-admin only.
 		superAuth.GET("/system-config", systemH.Get)
 		superAuth.PUT("/system-config", systemH.Update)
+
+		// Zombie-user cleanup is super-admin only (bulk destructive action).
+		superAuth.POST("/users/zombies/preview", adminUserH.PreviewZombies)
+		superAuth.POST("/users/zombies/cleanup", adminUserH.CleanupZombies)
 	}
 
 	return r

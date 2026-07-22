@@ -113,6 +113,55 @@ func (h *AdminUserHandler) Delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// PreviewZombies counts how many users match the supplied zombie criteria.
+// It is a read-only probe so an admin can see the blast radius before deleting.
+func (h *AdminUserHandler) PreviewZombies(c *gin.Context) {
+	var req dto.ZombieFilterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	count, err := h.svc.CountZombies(service.ZombieFilter{
+		NeverUsedProxy:    req.NeverUsedProxy,
+		EmailUnverified:   req.EmailUnverified,
+		NoPaidOrders:      req.NoPaidOrders,
+		InactiveDays:      req.InactiveDays,
+		MinAccountDays:    req.MinAccountDays,
+		ProtectActiveSubs: req.ProtectActiveSubs,
+	})
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"count": count})
+}
+
+// CleanupZombies deletes every user matching the supplied zombie criteria. At
+// least one criterion is required so a misconfigured request cannot wipe all
+// users; the operation is super-admin only (routed under superAuth).
+func (h *AdminUserHandler) CleanupZombies(c *gin.Context) {
+	var req dto.ZombieFilterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !req.NeverUsedProxy && !req.EmailUnverified && !req.NoPaidOrders && req.InactiveDays <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one cleanup criterion is required"})
+		return
+	}
+	deleted, err := h.svc.DeleteZombies(service.ZombieFilter{
+		NeverUsedProxy:    req.NeverUsedProxy,
+		EmailUnverified:   req.EmailUnverified,
+		NoPaidOrders:      req.NoPaidOrders,
+		InactiveDays:      req.InactiveDays,
+		MinAccountDays:    req.MinAccountDays,
+		ProtectActiveSubs: req.ProtectActiveSubs,
+	})
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
+}
+
 func (h *AdminUserHandler) RegenerateSubToken(c *gin.Context) {
 	tok, err := h.svc.RegenerateSubToken(c.Param("id"))
 	if writeErr(c, err) {

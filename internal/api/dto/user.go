@@ -50,6 +50,28 @@ type SetUserNodesRequest struct {
 	NodeIDs []string `json:"node_ids" binding:"required"`
 }
 
+// ZombieFilterRequest is the request body for previewing/cleaning up zombie
+// users. A user is a zombie only if it satisfies EVERY selected criterion.
+type ZombieFilterRequest struct {
+	// NeverUsedProxy: (up_total + down_total) = 0 AND last_traffic_at IS NULL.
+	NeverUsedProxy bool `json:"never_used_proxy"`
+	// EmailUnverified: email_verified = false.
+	EmailUnverified bool `json:"email_unverified"`
+	// NoPaidOrders: no order with status = 'paid' exists for the user.
+	NoPaidOrders bool `json:"no_paid_orders"`
+	// InactiveDays: last_traffic_at older than N days (or NULL). 0 disables
+	// the inactivity criterion.
+	InactiveDays int `json:"inactive_days" binding:"gte=0"`
+	// MinAccountDays: never treat an account younger than N days as a zombie,
+	// so freshly registered users are protected from bulk cleanup. 0 disables
+	// the guard.
+	MinAccountDays int `json:"min_account_days" binding:"gte=0"`
+	// ProtectActiveSubs: when true, users whose subscription is still valid
+	// (expire_at in the future) are never treated as zombies, so a paying user
+	// who simply hasn't connected yet is never bulk-deleted.
+	ProtectActiveSubs bool `json:"protect_active_subs"`
+}
+
 // UpdateProfileRequest is the self-service profile edit body.
 type UpdateProfileRequest struct {
 	Username *string `json:"username" binding:"required"`
