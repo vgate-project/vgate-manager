@@ -6,8 +6,8 @@ import "github.com/vgate-project/vgate-manager/internal/model"
 type TicketCreateRequest struct {
 	Subject      string `json:"subject" binding:"required"`
 	Content      string `json:"content" binding:"required"`
-	Priority     string `json:"priority"`                    // optional, defaults to normal
-	NotifyMethod string `json:"notify_method"`                // optional; none|email|telegram; empty defaults to telegram if bound
+	Priority     string `json:"priority"`      // optional, defaults to normal
+	NotifyMethod string `json:"notify_method"` // optional; none|email|telegram; empty defaults to telegram if bound
 }
 
 // TicketReplyRequest is the body for appending a message to a ticket.
@@ -24,4 +24,10 @@ type TicketStatusRequest struct {
 type TicketDetail struct {
 	Ticket   model.Ticket          `json:"ticket"`
 	Messages []model.TicketMessage `json:"messages"`
+}
+
+// TicketUnreadResponse is returned by GET /tickets/unread. Count is the number
+// of tickets with an unread reply for the caller.
+type TicketUnreadResponse struct {
+	Count int64 `json:"count"`
 }

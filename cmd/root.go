@@ -85,6 +85,7 @@ func run(cmd *cobra.Command) {
 		&model.Order{},
 		&model.Ticket{},
 		&model.TicketMessage{},
+		&model.TicketReadState{},
 	); err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
 	}

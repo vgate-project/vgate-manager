@@ -80,7 +80,6 @@ func DefaultConfig() *Config {
 		Admin: AdminConfig{
 			Bootstrap: BootstrapAdmin{
 				Username: "admin",
-				Password: "change-me",
 			},
 		},
 		Log: LogConfig{

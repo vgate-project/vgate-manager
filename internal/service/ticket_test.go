@@ -16,7 +16,7 @@ func newTicketTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Ticket{}, &model.TicketMessage{}, &model.User{}); err != nil {
+	if err := db.AutoMigrate(&model.Ticket{}, &model.TicketMessage{}, &model.TicketReadState{}, &model.User{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	// Seed a user so notification paths have an owner to look up.
@@ -179,6 +179,40 @@ func TestTicketAdminListPopulatesEmail(t *testing.T) {
 	}
 	if items[0].UserEmail != "user@example.com" {
 		t.Fatalf("expected populated email, got %q", items[0].UserEmail)
+	}
+}
+
+func TestTicketUnread(t *testing.T) {
+	db := newTicketTestDB(t)
+	svc := NewTicketService(db)
+	tk, _ := svc.Create("u1", "S", "body", "", "")
+
+	// After the user creates a ticket they are the last speaker: 0 unread for
+	// them, but 1 unread for admins (a fresh ticket needs attention).
+	if n, _ := svc.UnreadCountForUser("u1"); n != 0 {
+		t.Fatalf("user unread after create: got %d, want 0", n)
+	}
+	if n, _ := svc.UnreadCountForAdmin(); n != 1 {
+		t.Fatalf("admin unread after create: got %d, want 1", n)
+	}
+
+	// Admin replies: now it is unread for the user, not for the admin.
+	if _, err := svc.AddAdminMessage("1", tk.ID, "looking into it"); err != nil {
+		t.Fatalf("admin reply: %v", err)
+	}
+	if n, _ := svc.UnreadCountForUser("u1"); n != 1 {
+		t.Fatalf("user unread after admin reply: got %d, want 1", n)
+	}
+	if n, _ := svc.UnreadCountForAdmin(); n != 0 {
+		t.Fatalf("admin unread after own reply: got %d, want 0", n)
+	}
+
+	// User opens the ticket -> marks read -> dot clears.
+	if _, _, err := svc.GetForUser("u1", tk.ID); err != nil {
+		t.Fatalf("get for user: %v", err)
+	}
+	if n, _ := svc.UnreadCountForUser("u1"); n != 0 {
+		t.Fatalf("user unread after opening: got %d, want 0", n)
 	}
 }
 

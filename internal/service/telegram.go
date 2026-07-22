@@ -678,7 +678,9 @@ func (s *TelegramService) handleAdminNodes(c tb.Context) error {
 	if s.nodeSvc == nil {
 		return c.Send("Node service is not ready.")
 	}
-	nodes, _, err := s.nodeSvc.List(1, 100, "")
+	// List only real nodes; virtual child nodes are not real data-plane
+	// endpoints and should not appear in the admin node list.
+	nodes, _, err := s.nodeSvc.List(1, 100, "real")
 	if err != nil {
 		return c.Send("Failed to load nodes.")
 	}

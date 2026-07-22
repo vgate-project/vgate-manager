@@ -48,6 +48,16 @@ func (h *UserTicketHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, dto.Page[model.Ticket]{Items: items, Total: total, Page: page, PageSize: pageSize})
 }
 
+// Unread serves GET /api/v1/user/tickets/unread: count of the user's tickets
+// with an unread admin reply.
+func (h *UserTicketHandler) Unread(c *gin.Context) {
+	count, err := h.svc.UnreadCountForUser(c.GetString("user_id"))
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, dto.TicketUnreadResponse{Count: count})
+}
+
 // Get serves GET /api/v1/user/tickets/:id.
 func (h *UserTicketHandler) Get(c *gin.Context) {
 	userID := c.GetString("user_id")
@@ -102,6 +112,16 @@ func (h *AdminTicketHandler) List(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, dto.Page[model.Ticket]{Items: items, Total: total, Page: page, PageSize: pageSize})
+}
+
+// Unread serves GET /api/v1/admin/tickets/unread: count of tickets with an
+// unread user reply (global across admins).
+func (h *AdminTicketHandler) Unread(c *gin.Context) {
+	count, err := h.svc.UnreadCountForAdmin()
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, dto.TicketUnreadResponse{Count: count})
 }
 
 // Get serves GET /api/v1/admin/tickets/:id.

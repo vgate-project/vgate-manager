@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"strings"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -122,6 +123,7 @@ func (s *TicketService) Create(userID, subject, content, priority, notifyMethod 
 		Priority:     normalizePriority(priority),
 		Status:       model.TicketStatusOpen,
 		NotifyMethod: notify,
+		LastSender:   model.TicketSenderUser,
 	}
 	msg := &model.TicketMessage{
 		ID:       util.NewTicketMessageID(),
@@ -160,6 +162,9 @@ func (s *TicketService) AddUserMessage(userID, ticketID, content string) (*model
 	if err := s.db.Create(msg).Error; err != nil {
 		return nil, err
 	}
+	if err := s.touchActivity(&t, msg.Sender); err != nil {
+		return nil, err
+	}
 	if t.Status == model.TicketStatusResolved || t.Status == model.TicketStatusClosed {
 		t.Status = model.TicketStatusInProgress
 		if err := s.db.Model(&t).Update("status", t.Status).Error; err != nil {
@@ -189,6 +194,9 @@ func (s *TicketService) AddAdminMessage(adminID, ticketID, content string) (*mod
 		Content:  strings.TrimSpace(content),
 	}
 	if err := s.db.Create(msg).Error; err != nil {
+		return nil, err
+	}
+	if err := s.touchActivity(&t, msg.Sender); err != nil {
 		return nil, err
 	}
 	if t.Status == model.TicketStatusOpen || t.Status == model.TicketStatusResolved || t.Status == model.TicketStatusClosed {
@@ -281,7 +289,8 @@ func (s *TicketService) ListForAdmin(statusFilter, q string, page, pageSize int)
 	return items, total, nil
 }
 
-// GetForUser returns a ticket and its messages, verifying ownership.
+// GetForUser returns a ticket and its messages, verifying ownership. Opening a
+// ticket marks it read for the owner, clearing the unread dot.
 func (s *TicketService) GetForUser(userID, ticketID string) (*model.Ticket, []model.TicketMessage, error) {
 	var t model.Ticket
 	if err := s.db.First(&t, "id = ? AND user_id = ?", ticketID, userID).Error; err != nil {
@@ -291,10 +300,12 @@ func (s *TicketService) GetForUser(userID, ticketID string) (*model.Ticket, []mo
 	if err != nil {
 		return nil, nil, err
 	}
+	s.markRead(recipientUser(userID), ticketID)
 	return &t, msgs, nil
 }
 
-// GetForAdmin returns a ticket and its messages, populating UserEmail.
+// GetForAdmin returns a ticket and its messages, populating UserEmail. Opening
+// a ticket marks it read for admins (global state), clearing the unread dot.
 func (s *TicketService) GetForAdmin(ticketID string) (*model.Ticket, []model.TicketMessage, error) {
 	var t model.Ticket
 	if err := s.db.First(&t, "id = ?", ticketID).Error; err != nil {
@@ -305,7 +316,66 @@ func (s *TicketService) GetForAdmin(ticketID string) (*model.Ticket, []model.Tic
 		return nil, nil, err
 	}
 	s.populateUserEmails([]model.Ticket{t})
+	s.markRead(recipientAdmin, ticketID)
 	return &t, msgs, nil
+}
+
+// recipientUser builds the per-user read-state recipient key.
+func recipientUser(userID string) string { return "u:" + userID }
+
+// recipientAdmin is the single global recipient key shared by all admins.
+const recipientAdmin = "admin"
+
+// touchActivity records that a message was appended: it stamps the ticket's
+// updated_at and denormalizes the last speaker so unread detection is a simple
+// indexed query rather than a sub-query over messages.
+func (s *TicketService) touchActivity(t *model.Ticket, sender string) error {
+	return s.db.Model(t).Updates(map[string]any{
+		"updated_at":  time.Now(),
+		"last_sender": sender,
+	}).Error
+}
+
+// markRead upserts the recipient's read state for a ticket so it no longer
+// counts as unread.
+func (s *TicketService) markRead(recipient, ticketID string) {
+	var rs model.TicketReadState
+	err := s.db.Where("ticket_id = ? AND recipient = ?", ticketID, recipient).First(&rs).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		rs = model.TicketReadState{TicketID: ticketID, Recipient: recipient, LastReadAt: time.Now()}
+		s.db.Create(&rs)
+		return
+	}
+	if err != nil {
+		log.Warnf("ticket markRead lookup failed for %s/%s: %v", recipient, ticketID, err)
+		return
+	}
+	s.db.Model(&rs).Update("last_read_at", time.Now())
+}
+
+// UnreadCountForUser returns how many of the user's tickets have an admin reply
+// newer than the user's last view of that ticket.
+func (s *TicketService) UnreadCountForUser(userID string) (int64, error) {
+	var n int64
+	err := s.db.Model(&model.Ticket{}).
+		Joins("LEFT JOIN ticket_read_states r ON r.ticket_id = tickets.id AND r.recipient = ?", recipientUser(userID)).
+		Where("tickets.user_id = ?", userID).
+		Where("tickets.last_sender = ?", model.TicketSenderAdmin).
+		Where("tickets.updated_at > COALESCE(r.last_read_at, ?)", time.Time{}).
+		Count(&n).Error
+	return n, err
+}
+
+// UnreadCountForAdmin returns how many tickets have a user reply newer than the
+// admins' last view (the read state is global across all admins).
+func (s *TicketService) UnreadCountForAdmin() (int64, error) {
+	var n int64
+	err := s.db.Model(&model.Ticket{}).
+		Joins("LEFT JOIN ticket_read_states r ON r.ticket_id = tickets.id AND r.recipient = ?", recipientAdmin).
+		Where("tickets.last_sender = ?", model.TicketSenderUser).
+		Where("tickets.updated_at > COALESCE(r.last_read_at, ?)", time.Time{}).
+		Count(&n).Error
+	return n, err
 }
 
 func (s *TicketService) messages(ticketID string) ([]model.TicketMessage, error) {

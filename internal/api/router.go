@@ -178,6 +178,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		userProtected.GET("/tickets/:id", userTicketH.Get)
 		userProtected.POST("/tickets/:id/messages", userTicketH.Reply)
 		userProtected.POST("/tickets/:id/close", userTicketH.Close)
+		userProtected.GET("/tickets/unread", userTicketH.Unread)
 
 		// Telegram link management: status, one-time bind code, unlink,
 		// and announcement opt-in toggle.
@@ -271,6 +272,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		adminAuth.GET("/tickets/:id", adminTicketH.Get)
 		adminAuth.POST("/tickets/:id/messages", adminTicketH.Reply)
 		adminAuth.PUT("/tickets/:id/status", adminTicketH.SetStatus)
+		adminAuth.GET("/tickets/unread", adminTicketH.Unread)
 
 		// Broadcast email to users (optionally also as an announcement).
 		adminAuth.POST("/email/send", adminEmailH.Send)
