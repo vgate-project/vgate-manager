@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -401,6 +402,25 @@ func (a *AuthService) RegisterUser(username, email, password, inviteCode string)
 	// Normalize the email: it is the account's unique key and login identifier,
 	// so store it lowercased for consistent case-insensitive matching.
 	email = strings.ToLower(strings.TrimSpace(email))
+
+	// Email-suffix whitelist: when configured, only allow registration from the
+	// listed domains (exact match, case-insensitive). An empty list means no
+	// restriction. Enforced before any further processing so a disallowed email
+	// never reaches duplicate/quota checks.
+	if a.sysCfg != nil {
+		allowed, werr := a.sysCfg.GetRegisterEmailSuffixWhitelist()
+		if werr != nil {
+			return nil, "", time.Time{}, false, werr
+		}
+		if len(allowed) > 0 {
+			domain := email[strings.LastIndex(email, "@")+1:]
+			ok := slices.Contains(allowed, domain)
+			if !ok {
+				return nil, "", time.Time{}, false, errors.New("email domain not allowed")
+			}
+		}
+	}
+
 	if a.sysCfg != nil && !a.sysCfg.IsRegisterEnabled() {
 		return nil, "", time.Time{}, false, errors.New("registration is disabled")
 	}

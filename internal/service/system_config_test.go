@@ -70,6 +70,52 @@ func TestGetSubBaseURLs(t *testing.T) {
 	}
 }
 
+func TestGetRegisterEmailSuffixWhitelist(t *testing.T) {
+	seed := func(t *testing.T, value string) *SystemConfigService {
+		db := cfgDB(t)
+		if err := db.Create(&model.SystemConfig{Key: CfgKeyRegisterEmailSuffixWhitelist, Value: value}).Error; err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		return NewSystemConfigService(db)
+	}
+
+	// Valid list: entries are lowercased and trimmed; blanks dropped.
+	svc := seed(t, `["Example.com", " foo.org ", ""]`)
+	got, err := svc.GetRegisterEmailSuffixWhitelist()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"example.com", "foo.org"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+
+	// Empty array ⇒ empty list, no error (allow all).
+	svc = seed(t, "[]")
+	got, err = svc.GetRegisterEmailSuffixWhitelist()
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty array: got %v err %v, want empty", got, err)
+	}
+
+	// Non-JSON value is an error (broken admin edit is surfaced).
+	svc = seed(t, "not-json")
+	if _, err := svc.GetRegisterEmailSuffixWhitelist(); err == nil {
+		t.Fatal("expected error for non-JSON value")
+	}
+
+	// Absent key ⇒ empty list, no error.
+	svc = NewSystemConfigService(cfgDB(t))
+	got, err = svc.GetRegisterEmailSuffixWhitelist()
+	if err != nil || len(got) != 0 {
+		t.Fatalf("absent key: got %v err %v, want empty", got, err)
+	}
+}
+
 func TestSubscriptionService_SubscribeURL(t *testing.T) {
 	ss := &SubscriptionService{}
 

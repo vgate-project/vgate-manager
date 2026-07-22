@@ -99,5 +99,15 @@ func (h *SystemHandler) Update(c *gin.Context) {
 			}
 		}
 	}
+	// Validate the registration email-suffix whitelist: must be a JSON array of
+	// strings. Invalid edits are rejected immediately so the admin gets
+	// feedback rather than a silently broken registration gate.
+	if v, ok := body[service.CfgKeyRegisterEmailSuffixWhitelist]; ok {
+		var domains []string
+		if err := json.Unmarshal([]byte(v), &domains); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + service.CfgKeyRegisterEmailSuffixWhitelist + ": must be a JSON array of strings"})
+			return
+		}
+	}
 	c.JSON(http.StatusOK, body)
 }

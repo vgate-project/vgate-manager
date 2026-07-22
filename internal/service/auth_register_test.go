@@ -58,3 +58,53 @@ func TestRegisterPendingIssuesSession(t *testing.T) {
 		t.Errorf("issued session could not log the unverified user in: %v", lerr)
 	}
 }
+
+// TestRegisterEmailSuffixWhitelist locks the contract: when the
+// user.register_email_suffix_whitelist is set, only emails whose domain is in
+// the list may register; others are rejected, and an empty list allows any
+// domain. Case is normalized.
+func TestRegisterEmailSuffixWhitelist(t *testing.T) {
+	newSvc := func(t *testing.T, whitelist string) *AuthService {
+		t.Helper()
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+		if err != nil {
+			t.Fatalf("open db: %v", err)
+		}
+		if err := db.AutoMigrate(&model.User{}, &model.SystemConfig{}, &model.EmailVerification{}); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		// Seed config before constructing the service so its on-init cache warm
+		// picks up the rows.
+		if err := db.Create(&model.SystemConfig{Key: CfgKeyRegisterEnabled, Value: "true"}).Error; err != nil {
+			t.Fatalf("seed register_enabled: %v", err)
+		}
+		if err := db.Create(&model.SystemConfig{Key: CfgKeyRegisterEmailSuffixWhitelist, Value: whitelist}).Error; err != nil {
+			t.Fatalf("seed whitelist: %v", err)
+		}
+		sysCfg := NewSystemConfigService(db)
+		authSvc := NewAuthService(db, "test-secret", time.Hour, time.Hour)
+		authSvc.SetConfigService(sysCfg)
+		return authSvc
+	}
+
+	// Empty list ⇒ any domain allowed.
+	open := newSvc(t, "[]")
+	if _, _, _, _, err := open.RegisterUser("carol", "carol@gmail.com", "secret-pass-123", ""); err != nil {
+		t.Errorf("empty whitelist should allow any domain, got error: %v", err)
+	}
+
+	// Restricted list.
+	restricted := newSvc(t, `["Example.com","foo.org"]`)
+	if _, _, _, _, err := restricted.RegisterUser("alice", "alice@example.com", "secret-pass-123", ""); err != nil {
+		t.Errorf("allowed domain (case-insensitive) should succeed, got: %v", err)
+	}
+	if _, _, _, _, err := restricted.RegisterUser("bob", "bob@foo.org", "secret-pass-123", ""); err != nil {
+		t.Errorf("allowed domain (foo.org) should succeed, got: %v", err)
+	}
+	if _, _, _, _, err := restricted.RegisterUser("dave", "dave@gmail.com", "secret-pass-123", ""); err == nil {
+		t.Error("expected error for domain not in whitelist (gmail.com)")
+	}
+	if _, _, _, _, err := restricted.RegisterUser("erin", "erin@mail.example.com", "secret-pass-123", ""); err == nil {
+		t.Error("expected error: subdomain mail.example.com must NOT match example.com (exact match)")
+	}
+}

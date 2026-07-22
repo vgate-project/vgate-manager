@@ -22,13 +22,15 @@ func NewUserAuthHandler(svc *service.AuthService, userSvc *service.UserService, 
 
 // GetConfig serves GET /api/v1/user/config — returns public system settings.
 func (h *UserAuthHandler) GetConfig(c *gin.Context) {
+	whitelist, _ := h.sysCfg.GetRegisterEmailSuffixWhitelist()
 	c.JSON(http.StatusOK, dto.UserConfigResponse{
-		RegisterEnabled:            h.svc.IsRegisterEnabled(),
-		RegisterRequireInvite:      h.svc.IsRegisterRequireInvite(),
-		RegisterRequireEmailVerify: h.svc.IsRegisterRequireEmailVerify(),
-		CaptchaEnabled:             h.captcha.Enabled(),
-		CaptchaSiteKey:             h.captcha.SiteKey(),
-		SiteName:                   h.sysCfg.GetSiteName(),
+		RegisterEnabled:              h.svc.IsRegisterEnabled(),
+		RegisterRequireInvite:        h.svc.IsRegisterRequireInvite(),
+		RegisterRequireEmailVerify:   h.svc.IsRegisterRequireEmailVerify(),
+		RegisterEmailSuffixWhitelist: whitelist,
+		CaptchaEnabled:               h.captcha.Enabled(),
+		CaptchaSiteKey:               h.captcha.SiteKey(),
+		SiteName:                     h.sysCfg.GetSiteName(),
 	})
 }
 

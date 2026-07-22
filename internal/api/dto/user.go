@@ -106,10 +106,11 @@ type UserLoginResponse struct {
 }
 
 type UserConfigResponse struct {
-	RegisterEnabled            bool   `json:"register_enabled"`
-	RegisterRequireInvite      bool   `json:"register_require_invite"`
-	RegisterRequireEmailVerify bool   `json:"register_require_email_verify"`
-	CaptchaEnabled             bool   `json:"captcha_enabled"`
-	CaptchaSiteKey             string `json:"captcha_site_key"`
-	SiteName                   string `json:"site_name"`
+	RegisterEnabled              bool     `json:"register_enabled"`
+	RegisterRequireInvite        bool     `json:"register_require_invite"`
+	RegisterRequireEmailVerify   bool     `json:"register_require_email_verify"`
+	RegisterEmailSuffixWhitelist []string `json:"register_email_suffix_whitelist"`
+	CaptchaEnabled               bool     `json:"captcha_enabled"`
+	CaptchaSiteKey               string   `json:"captcha_site_key"`
+	SiteName                     string   `json:"site_name"`
 }

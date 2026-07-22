@@ -50,6 +50,12 @@ const (
 	// state until the user clicks the emailed verification link
 	// ("true"|"false"). When enabled, registration does not auto-login.
 	CfgKeyRegisterRequireEmailVerify = "user.register_require_email_verify"
+	// CfgKeyRegisterEmailSuffixWhitelist restricts registration to email
+	// addresses whose domain (the part after "@") is in this list. Stored as a
+	// JSON array of strings (e.g. `["example.com","foo.com"]`). An empty/absent
+	// value means no restriction (allow any domain). Matching is exact and
+	// case-insensitive.
+	CfgKeyRegisterEmailSuffixWhitelist = "user.register_email_suffix_whitelist"
 	// CfgKeyInviteDefaultUserQuota is the per-user cap on successful
 	// registrations a user may sponsor via self-generated invite codes. 0 disables
 	// user-generated invites (admins can still mint codes directly).
@@ -418,6 +424,33 @@ func (s *SystemConfigService) GetSubBaseURLs() ([]string, error) {
 	return out, nil
 }
 
+// GetRegisterEmailSuffixWhitelist returns the configured list of allowed email
+// domains for registration. Each entry is lowercased and trimmed; empty entries
+// are filtered out so callers never receive a blank domain. A stored value that
+// is not valid JSON returns an error (so a broken admin edit is surfaced rather
+// than silently ignored). An absent key (or an empty list) means no restriction
+// — any email domain is allowed.
+func (s *SystemConfigService) GetRegisterEmailSuffixWhitelist() ([]string, error) {
+	v, err := s.Get(CfgKeyRegisterEmailSuffixWhitelist)
+	if err != nil {
+		// Absent key ⇒ no restriction (allow all domains).
+		return nil, nil
+	}
+	var raw []string
+	if err := json.Unmarshal([]byte(v), &raw); err != nil {
+		return nil, fmt.Errorf("invalid %s: not a JSON array: %w", CfgKeyRegisterEmailSuffixWhitelist, err)
+	}
+	out := make([]string, 0, len(raw))
+	for _, d := range raw {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d == "" {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
 // TelegramConfig is the resolved Telegram bot configuration sourced from
 // SystemConfig. The BotToken is the only secret and is stored in plaintext at
 // the same trust level as alipay.private_key / email.smtp_pass.
@@ -473,48 +506,49 @@ func (s *SystemConfigService) defaultConfigRows() map[string]string {
 		cors = []byte(`["*"]`)
 	}
 	return map[string]string{
-		CfgKeyJWTAccessTTLSecs:           strconv.Itoa(d.JWT.AccessTTLSecs),
-		CfgKeyJWTRefreshTTLSecs:          strconv.Itoa(d.JWT.RefreshTTLSecs),
-		CfgKeyLogLevel:                   d.Log.Level,
-		CfgKeyLogFormat:                  d.Log.Format,
-		CfgKeyCORSAllowedOrigins:         string(cors),
-		CfgKeyServerReadTimeoutSecs:      strconv.Itoa(d.Server.ReadTimeoutSecs),
-		CfgKeyServerWriteTimeoutSecs:     strconv.Itoa(d.Server.WriteTimeoutSecs),
-		CfgKeyQuotaResetDay:              "1",
-		CfgKeyPasswordMinLength:          "8",
-		CfgKeyPasswordRequireComplexity:  "false",
-		CfgKeyRegisterEnabled:            "false",
-		CfgKeyRegisterRequireInvite:      "false",
-		CfgKeyRegisterRequireEmailVerify: "false",
-		CfgKeyInviteDefaultUserQuota:     "5",
-		CfgKeySiteBaseURL:                "",
-		CfgKeySiteName:                   "VGate",
-		CfgKeyEmailEnabled:               "false",
-		CfgKeyEmailSMTPHost:              "",
-		CfgKeyEmailSMTPPort:              "587",
-		CfgKeyEmailSMTPUser:              "",
-		CfgKeyEmailSMTPPass:              "",
-		CfgKeyEmailFrom:                  "",
-		CfgKeyEmailFromName:              "",
-		CfgKeyEmailSMTPSecurity:          "starttls",
-		CfgKeyEmailProvider:              "smtp",
-		CfgKeyEmailResendAPIKey:          "",
-		CfgKeyCaptchaTurnstileEnabled:    "false",
-		CfgKeyCaptchaTurnstileSiteKey:    "",
-		CfgKeyCaptchaTurnstileSecretKey:  "",
-		CfgKeySubBaseURLs:                "[]",
-		CfgKeyPaymentProductName:        "",
-		CfgKeyTelegramEnabled:            "false",
-		CfgKeyTelegramBotToken:           "",
-		CfgKeyTelegramBotUsername:        "",
-		CfgKeyTelegramUserBotEnabled:     "false",
-		CfgKeyAlertNewRegistration:       "false",
-		CfgKeyAlertOrderPaid:             "false",
-		CfgKeyAlertNodeUp:                "false",
-		CfgKeyAlertNodeDown:              "false",
-		CfgKeyAlertTrafficExceeded:       "false",
-		CfgKeyAlertAnnouncement:          "false",
-		CfgKeyAlertTicket:                "false",
+		CfgKeyJWTAccessTTLSecs:             strconv.Itoa(d.JWT.AccessTTLSecs),
+		CfgKeyJWTRefreshTTLSecs:            strconv.Itoa(d.JWT.RefreshTTLSecs),
+		CfgKeyLogLevel:                     d.Log.Level,
+		CfgKeyLogFormat:                    d.Log.Format,
+		CfgKeyCORSAllowedOrigins:           string(cors),
+		CfgKeyServerReadTimeoutSecs:        strconv.Itoa(d.Server.ReadTimeoutSecs),
+		CfgKeyServerWriteTimeoutSecs:       strconv.Itoa(d.Server.WriteTimeoutSecs),
+		CfgKeyQuotaResetDay:                "1",
+		CfgKeyPasswordMinLength:            "8",
+		CfgKeyPasswordRequireComplexity:    "false",
+		CfgKeyRegisterEnabled:              "false",
+		CfgKeyRegisterRequireInvite:        "false",
+		CfgKeyRegisterRequireEmailVerify:   "false",
+		CfgKeyRegisterEmailSuffixWhitelist: "[]",
+		CfgKeyInviteDefaultUserQuota:       "5",
+		CfgKeySiteBaseURL:                  "",
+		CfgKeySiteName:                     "VGate",
+		CfgKeyEmailEnabled:                 "false",
+		CfgKeyEmailSMTPHost:                "",
+		CfgKeyEmailSMTPPort:                "587",
+		CfgKeyEmailSMTPUser:                "",
+		CfgKeyEmailSMTPPass:                "",
+		CfgKeyEmailFrom:                    "",
+		CfgKeyEmailFromName:                "",
+		CfgKeyEmailSMTPSecurity:            "starttls",
+		CfgKeyEmailProvider:                "smtp",
+		CfgKeyEmailResendAPIKey:            "",
+		CfgKeyCaptchaTurnstileEnabled:      "false",
+		CfgKeyCaptchaTurnstileSiteKey:      "",
+		CfgKeyCaptchaTurnstileSecretKey:    "",
+		CfgKeySubBaseURLs:                  "[]",
+		CfgKeyPaymentProductName:           "",
+		CfgKeyTelegramEnabled:              "false",
+		CfgKeyTelegramBotToken:             "",
+		CfgKeyTelegramBotUsername:          "",
+		CfgKeyTelegramUserBotEnabled:       "false",
+		CfgKeyAlertNewRegistration:         "false",
+		CfgKeyAlertOrderPaid:               "false",
+		CfgKeyAlertNodeUp:                  "false",
+		CfgKeyAlertNodeDown:                "false",
+		CfgKeyAlertTrafficExceeded:         "false",
+		CfgKeyAlertAnnouncement:            "false",
+		CfgKeyAlertTicket:                  "false",
 	}
 }
 
