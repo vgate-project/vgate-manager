@@ -1,9 +1,9 @@
 # VGate Manager
 
-Backend API server for **VGate** — admin/identity/billing management and the data
-plane that proxy nodes report into. Written in Go. This is the **source of truth**
-for the whole system: nodes, users, plans, orders, and traffic all live here,
-including per-user and per-node speed caps that the proxy nodes enforce.
+Backend API server for **VGate** — admin/identity/billing management and the data plane that proxy nodes report into.
+Written in Go. This is the **source of truth**
+for the whole system: nodes, users, plans, orders, and traffic all live here, including per-user and per-node speed caps
+that the proxy nodes enforce.
 
 ## Tech stack
 
@@ -32,12 +32,12 @@ go build -o vgate-manager .
 ./vgate-manager
 ```
 
-On first start the database is auto-migrated and an initial admin is bootstrapped
-from `admin.bootstrap` in `config.yml` (defaults: **username `admin`**,
-**password `change-me`**). The generated password is printed **only once** at
-startup — save it. Subsequent starts reuse the existing admin. Data migrations run
-automatically on startup (idempotent), and DB-backed system-config overrides are
-merged on top of `config.yml`.
+On first start the database is auto-migrated and an initial admin is bootstrapped from `admin.bootstrap` in `config.yml`
+(default **username `admin`**; the bundled
+`docker-compose.yml` defaults the password to `change-me`, otherwise set
+`admin.bootstrap.password` / `ADMIN_BOOTSTRAP_PASSWORD` explicitly). The admin is created **only once** on first start;
+subsequent starts reuse the existing admin. Data migrations run automatically on startup (idempotent), and DB-backed
+system-config overrides are merged on top of `config.yml`.
 
 ### Admin CLI
 
@@ -47,18 +47,18 @@ Create additional admin accounts from the command line:
 ./vgate-manager admin create --username alice --password s3cret --role super_admin
 ```
 
-`--role` is one of `admin` (default) or `super_admin`. Super admins have access to
-the `/admins` and plan-management endpoints.
+`--role` is one of `admin` (default) or `super_admin`. Super admins have access to the `/admins` and plan-management
+endpoints.
 
 ### CLI flags
 
-| Flag                  | Type   | Default | Description                                                                                                   |
-|-----------------------|--------|---------|---------------------------------------------------------------------------------------------------------------|
-| `--config`            | string | `./config.yml` | Path to the config file.                                                                              |
-| `--captcha-enabled`   | bool   | `false` | Enable Cloudflare Turnstile captcha on auth endpoints (`/user/login`, `/user/register`, `/user/verify-email`, `/user/resend-verification`, `/admin/login`). |
+| Flag                | Type   | Default        | Description                                                                                                                                                 |
+|---------------------|--------|----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--config`          | string | `./config.yml` | Path to the config file.                                                                                                                                    |
+| `--captcha-enabled` | bool   | `false`        | Enable Cloudflare Turnstile captcha on auth endpoints (`/user/login`, `/user/register`, `/user/verify-email`, `/user/resend-verification`, `/admin/login`). |
 
-The captcha toggle is normally a DB-backed, hot-reloadable setting
-(`captcha.turnstile_enabled`) that an admin flips from the admin console. The
+The captcha toggle is normally a DB-backed, hot-reloadable setting (`captcha.turnstile_enabled`) that an admin flips
+from the admin console. The
 `--captcha-enabled` flag lets you force that switch at startup:
 
 ```bash
@@ -69,10 +69,10 @@ The captcha toggle is normally a DB-backed, hot-reloadable setting
 ./vgate-manager --captcha-enabled=false
 ```
 
-When the flag is **omitted**, the existing DB value is left untouched, so an admin
-can still toggle captcha live at runtime. When the flag **is** passed (either
-`true` or `false`), it overrides the DB value on each start. The flag only gates
-the Turnstile challenge — the widget's `captcha.turnstile_site_key` and
+When the flag is **omitted**, the existing DB value is left untouched, so an admin can still toggle captcha live at
+runtime. When the flag **is** passed (either
+`true` or `false`), it overrides the DB value on each start. The flag only gates the Turnstile challenge — the widget's
+`captcha.turnstile_site_key` and
 `captcha.turnstile_secret_key` are still configured via system-config.
 
 ## Configuration (`config.yml`)
@@ -81,25 +81,43 @@ Two kinds of settings exist:
 
 **File/env only — require a restart to change:**
 
-| Key                        | Default                   | Notes                       |
-|----------------------------|---------------------------|-----------------------------|
-| `server.port`              | `8081`                    | HTTP listener port          |
-| `db.dialect`               | `sqlite`                  | `sqlite` \| `postgres`      |
-| `db.dsn`                   | `vgate_manager.db`        | SQLite path or Postgres DSN |
-| `db.max_open_conns`        | `20`                      |                             |
-| `db.max_idle_conns`        | `5`                       |                             |
-| `jwt.secret`               | `change-me-in-production` | **Set this in production**  |
-| `admin.bootstrap.username` | `admin`                   | used only on first run      |
-| `admin.bootstrap.password` | `change-me`               | used only on first run      |
+| Key                        | Default                   | Notes                                                          |
+|----------------------------|---------------------------|----------------------------------------------------------------|
+| `server.port`              | `8081`                    | HTTP listener port                                             |
+| `db.dialect`               | `sqlite`                  | `sqlite` \| `postgres`                                         |
+| `db.dsn`                   | `vgate_manager.db`        | SQLite path or Postgres DSN                                    |
+| `db.max_open_conns`        | `20`                      |                                                                |
+| `db.max_idle_conns`        | `5`                       |                                                                |
+| `jwt.secret`               | `change-me-in-production` | **Set this in production**                                     |
+| `admin.bootstrap.username` | `admin`                   | used only on first run                                         |
+| `admin.bootstrap.password` | _(unset)_                 | used only on first run; Docker Compose defaults to `change-me` |
 
 **Managed in the database (hot-reloadable via `PUT /api/v1/admin/system-config`)**
 — values for these in `config.yml` are **ignored**:
 
-- `jwt.access_ttl_secs` (`7200`)
-- `jwt.refresh_ttl_secs` (`604800`)
-- `log.level` (`info`), `log.format` (`text` \| `json`)
-- `cors.allowed_origins` (`["*"]`)
-- `server.read_timeout_secs` (`30`), `server.write_timeout_secs` (`30`)
+- **JWT:** `jwt.access_ttl_secs` (`7200`), `jwt.refresh_ttl_secs` (`604800`)
+- **Logging:** `log.level` (`info`), `log.format` (`text` \| `json`)
+- **CORS:** `cors.allowed_origins` (`["*"]`)
+- **Server timeouts:** `server.read_timeout_secs` (`30`), `server.write_timeout_secs` (`30`)
+- **Quota:** `quota.reset_day` (day-of-month the monthly usage counters reset)
+- **Password policy:** `password.min_length`, `password.require_complexity`
+- **Registration:** `user.register_enabled` (open registration), `user.register_require_invite`,
+  `user.register_email_suffix_whitelist`
+- **Trial accounts:** `user.trial_enabled`, `user.trial_quota_bytes`, `user.trial_duration_days`
+- **Invites:** `invite.default_user_quota`
+- **Site / subscription:** `site.name`, `site.base_url`, `sub.base_urls` (per-node subscription base URLs),
+  `payment.product_name_template`
+- **Email:** `email.provider` (`smtp` \| `resend`), `email.enabled`, `email.from`, `email.from_name`, plus
+  `email.smtp_*` / `email.resend_*` backend settings
+- **Captcha:** `captcha.turnstile_enabled`, `captcha.turnstile_site_key`, `captcha.turnstile_secret_key`
+- **Telegram:** `telegram.enabled`, `telegram.bot_token`, `telegram.bot_username`,
+  `telegram.user_bot_enabled`, `telegram.alert_ticket`, `telegram.alert_announcement`,
+  `telegram.alert_order_paid`, `telegram.alert_new_registration`, `telegram.alert_node_up`,
+  `telegram.alert_node_down`, `telegram.alert_traffic_exceeded`
+- **Payments:** `alipay.*`, `wechat.*`, `stripe.*` gateway credentials (configured from the admin console **System
+  Config → Payment**)
+- **Traffic reminders:** `reminder.enabled`, `reminder.pct_threshold` (`80`),
+  `reminder.days_threshold` (`3`), `reminder.cooldown_days` (`1`)
 
 ### Environment overrides
 
@@ -108,10 +126,9 @@ viper reads environment variables with `.` → `_` (uppercase), e.g.
 
 ## API overview
 
-All endpoints are prefixed with `/api/v1`. Auth uses JWT access + refresh tokens.
-Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
-`Authorization: Bearer <token>`. Node endpoints use a separate node token
-(`node_auth` middleware).
+All endpoints are prefixed with `/api/v1`. Auth uses JWT access + refresh tokens. Login returns both; `/admin/refresh`
+rotates a session. Admin endpoints require
+`Authorization: Bearer <token>`. Node endpoints use a separate node token (`node_auth` middleware).
 
 **Public / user**
 
@@ -120,7 +137,7 @@ Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
 - `POST /user/verify-email`
 - `GET  /user/config`
 - `GET  /sub/:sub_token` — subscription info (node side)
-- `GET  /user/profile`, `GET /user/subscribe`, `GET /user/subscribe-url`
+- `GET  /user/profile`, `PUT /user/profile`, `GET /user/subscribe`, `GET /user/subscribe-url`
 - `GET  /user/plans`, `GET /user/nodes`
 - `POST /user/regenerate-credential`, `POST /user/reset-sub-token`
 - `GET  /user/traffic-packages`
@@ -130,12 +147,17 @@ Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
 - `POST /user/change-password`
 - `GET/POST/DELETE /user/invites`, `GET /user/invites/status`
 - `GET  /user/announcements`
-- **Support tickets** — users open, reply to, and close their own tickets, and pick
-  how they are notified of admin replies:
+- **Support tickets** — users open, reply to, and close their own tickets, and pick how they are notified of admin
+  replies:
   `GET/POST /user/tickets`, `GET /user/tickets/:id`, `POST /user/tickets/:id/messages`,
   `POST /user/tickets/:id/close`
-- **Telegram link (self-service)** — bind/unbind a personal Telegram account and toggle
-  announcement delivery: `GET /user/telegram/status`, `POST /user/telegram/bind`,
+- `GET /user/tickets/unread` — count of unread admin replies on your tickets.
+- **Redemption codes** — redeem an invite/redemption code and view your redemption history:
+  `POST /user/redemption-codes/redeem`, `GET /user/redemption-codes/records`.
+- `PUT /user/reminder-channel` — choose the channel (`none` / `email` / `telegram`)
+  for traffic-reminder alerts.
+- **Telegram link (self-service)** — bind/unbind a personal Telegram account and toggle announcement delivery:
+  `GET /user/telegram/status`, `POST /user/telegram/bind`,
   `POST /user/telegram/unbind`, `PUT /user/telegram/notify`
 - `POST /api/v1/billing/:platform/notify` — async payment callback (public, `POST`) for `alipay`, `wechat`, or `stripe`
 
@@ -155,19 +177,22 @@ Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
   `PUT /admin/users/:id/password`, `GET /admin/users/:id/nodes`,
   `PUT /admin/users/:id/nodes`, `POST /admin/change-password`
 - `GET /admin/traffic`, `GET /admin/stats/overview`
-- `GET /admin/system-config`, `PUT /admin/system-config`
+- Zombie users: `POST /admin/users/zombies/preview`, `POST /admin/users/zombies/cleanup`
+- `GET /admin/system-config`, `PUT /admin/system-config` (super-admin only)
 - `POST /admin/utils/generate-x25519`
 - Invites: `GET/POST/DELETE /admin/invites`
+- Redemption codes: `GET/POST /admin/redemption-codes`, `GET /admin/redemption-codes/:id/records`,
+  `DELETE /admin/redemption-codes/:id`
 - Announcements: `GET/POST/PUT/DELETE /admin/announcements`
 - Email: `POST /admin/email/send`, `POST /admin/email/test`
-- Orders: `POST /admin/orders`, `GET /admin/orders`, `GET /admin/orders/:id`
+- Orders: `POST /admin/orders`, `GET /admin/orders`, `GET /admin/orders/:id`, `PUT /admin/orders/:id/status`
 - Traffic packages: `GET/POST/PUT/DELETE /admin/traffic-packages[/:id]`
 - Tickets: `GET/POST /admin/tickets`, `GET /admin/tickets/:id`,
-  `POST /admin/tickets/:id/messages`, `PUT /admin/tickets/:id/status`
-- Telegram: `POST /admin/telegram/broadcast` (send to all linked users), and the
-  admin self-link `GET/POST /admin/me/telegram/{status,bind,unbind}`
-- Super-admin only: `GET/POST /admin/admins`, `PUT /admin/admins/:id/password`,
-  plan CRUD (`GET/POST/PUT/DELETE /admin/plans/:id`, `GET /admin/plans`)
+  `POST /admin/tickets/:id/messages`, `PUT /admin/tickets/:id/status`, `GET /admin/tickets/unread`
+- Telegram: `POST /admin/telegram/broadcast` (send to all linked users), and the admin self-link
+  `GET/POST /admin/me/telegram/{status,bind,unbind}`
+- Super-admin only: `GET/POST /admin/admins`, `PUT /admin/admins/:id/password`, plan CRUD (`GET /admin/plans`,
+  `POST /admin/plans`, `GET/PUT/DELETE /admin/plans/:id`)
 
 **Health**
 
@@ -175,15 +200,15 @@ Login returns both; `/admin/refresh` rotates a session. Admin endpoints require
 
 ## Email
 
-Outbound mail (registration verification, admin broadcasts) is configured entirely via
-DB-backed system config — no restart required. Two backends are supported:
+Outbound mail (registration verification, admin broadcasts) is configured entirely via DB-backed system config — no
+restart required. Two backends are supported:
 
 - `smtp` (default) — a traditional SMTP server (`email.smtp_host` / `email.smtp_port` /
   `email.smtp_security` / `email.smtp_user` / `email.smtp_pass`).
 - `resend` — the Resend API (`email.resend_api_key`).
 
-Shared settings (both backends): `email.enabled` (master switch), `email.from` (the sender
-address; for Resend it must be a verified domain), and an optional `email.from_name`
+Shared settings (both backends): `email.enabled` (master switch), `email.from` (the sender address; for Resend it must
+be a verified domain), and an optional `email.from_name`
 (display name, e.g. `VGate` → `"VGate" <noreply@vgate.io>`).
 
 > Legacy per-backend `email.smtp_from` / `email.resend_from` keys are migrated into the
@@ -192,25 +217,25 @@ address; for Resend it must be a verified domain), and an optional `email.from_n
 Verify connectivity from the admin console (**System Config → Email → General → Test Email**)
 or call the endpoint directly:
 
-- `POST /admin/email/test` — body `{ "to": "you@example.com", "subject?": "...", "body?": "..." }`.
-  Uses the **currently saved** configuration (save first if you just edited settings) and
-  returns `{ "ok": true }` on success or `{ "ok": false, "error": "..." }` on delivery failure.
+- `POST /admin/email/test` — body `{ "to": "you@example.com", "subject?": "...", "body?": "..." }`. Uses the **currently
+  saved** configuration (save first if you just edited settings) and returns `{ "ok": true }` on success or
+  `{ "ok": false, "error": "..." }` on delivery failure.
 
 ## Registration & email verification
 
 Registration (`POST /user/register`) is open when `user.register_enabled` is true. When
-`user.register_require_email_verify` is also true, the account is held pending and a
-verification email is sent; otherwise it is active immediately.
+`user.register_require_email_verify` is also true, the account is held pending and a verification email is sent;
+otherwise it is active immediately.
 
 Either way the API returns a session token and the client auto-logs-in:
 
 - `201` — account active (verified, or verification not required).
 - `202` — pending verification, but the user is **already logged in**.
 
-Email verification gates **purchases and traffic only** — an unverified user can log in and
-browse, but cannot place orders and the proxy nodes will not serve their traffic until
-`email_verified` is true. Completing verification (clicking the emailed link, or using the
-in-app resend) flips that flag and the restriction lifts on the next node sync.
+Email verification gates **purchases and traffic only** — an unverified user can log in and browse, but cannot place
+orders and the proxy nodes will not serve their traffic until
+`email_verified` is true. Completing verification (clicking the emailed link, or using the in-app resend) flips that
+flag and the restriction lifts on the next node sync.
 
 ## Traffic quota
 
@@ -220,43 +245,41 @@ A user's traffic cap is stored as `quota_bytes` with this sentinel convention:
 - `0` — no quota (access blocked; the user cannot consume traffic until granted a plan).
 - `>0` — capped at that many bytes.
 
-The manager filters the authorized users it pushes to proxy nodes accordingly, so a node
-never serves traffic for a blocked or over-quota user.
+The manager filters the authorized users it pushes to proxy nodes accordingly, so a node never serves traffic for a
+blocked or over-quota user.
 
 ## Telegram integration
 
-The manager can run a Telegram bot that delivers alerts and announcements and lets
-users and admins bind their personal accounts for ticket notifications. It is enabled
-and configured via DB-backed system config (`TelegramConfig`):
+The manager can run a Telegram bot that delivers alerts and announcements and lets users and admins bind their personal
+accounts for ticket notifications. It is enabled and configured via DB-backed system config (`TelegramConfig`):
 
-| Key                           | Default  | Meaning                                                       |
-|-------------------------------|----------|---------------------------------------------------------------|
-| `telegram.enabled`            | `false`  | Master switch for the bot.                                    |
-| `telegram.bot_token`          | `""`     | BotFather token (secret).                                    |
-| `telegram.bot_username`       | `""`     | Bot `@username`, used to build `/start` deep links.          |
-| `telegram.user_bot_enabled`   | `false`  | Allow users to self-bind via deep link.                     |
-| `telegram.alert_ticket`       | `false`  | Notify linked admins on new tickets / user replies.         |
-| `telegram.alert_announcement` | `false`  | Forward announcements to linked users.                      |
-| `telegram.alert_order_paid`   | `false`  | Notify on paid orders (and other alert toggles).            |
+| Key                           | Default | Meaning                                             |
+|-------------------------------|---------|-----------------------------------------------------|
+| `telegram.enabled`            | `false` | Master switch for the bot.                          |
+| `telegram.bot_token`          | `""`    | BotFather token (secret).                           |
+| `telegram.bot_username`       | `""`    | Bot `@username`, used to build `/start` deep links. |
+| `telegram.user_bot_enabled`   | `false` | Allow users to self-bind via deep link.             |
+| `telegram.alert_ticket`       | `false` | Notify linked admins on new tickets / user replies. |
+| `telegram.alert_announcement` | `false` | Forward announcements to linked users.              |
+| `telegram.alert_order_paid`   | `false` | Notify on paid orders (and other alert toggles).    |
 
 Binding uses a `/start <code>` deep link. The code carries a `u_` (user) or `a_`
-(admin) prefix so the bot routes the bind to the right account: admins link from
-**Settings → Telegram** in the admin console, users from **Settings** in the portal.
+(admin) prefix so the bot routes the bind to the right account: admins link from **Settings → Telegram** in the admin
+console, users from **Settings** in the portal.
 
-When an admin replies to a ticket, the owner is notified on the channel they chose
-when opening it (`none` / `email` / `telegram`). Every admin with a linked Telegram
-account also receives an alert on each new ticket and user reply.
+When an admin replies to a ticket, the owner is notified on the channel they chose when opening it (`none` / `email` /
+`telegram`). Every admin with a linked Telegram account also receives an alert on each new ticket and user reply.
 
 ## Support tickets
 
 Tickets are a lightweight support channel between users and admins.
 
-- **Users** open tickets (`POST /user/tickets`), reply, and can **close their own
-  ticket** (`POST /user/tickets/:id/close`). When opening one they pick a notification
-  method (`notify_method`: `none` | `email` | `telegram`); if omitted it defaults to
+- **Users** open tickets (`POST /user/tickets`), reply, and can **close their own ticket**
+  (`POST /user/tickets/:id/close`). When opening one they pick a notification method (`notify_method`: `none` |
+  `email` | `telegram`); if omitted it defaults to
   `telegram` when their account is Telegram-linked, else `none`.
-- **Admins** list/view all tickets, reply (`POST /admin/tickets/:id/messages`), and
-  move them through a status machine `open → in_progress → resolved → closed`
+- **Admins** list/view all tickets, reply (`POST /admin/tickets/:id/messages`), and move them through a status machine
+  `open → in_progress → resolved → closed`
   (`PUT /admin/tickets/:id/status`). A later user reply reopens a closed ticket.
 
 Admins can also broadcast a message to every linked Telegram user via
@@ -264,17 +287,17 @@ Admins can also broadcast a message to every linked Telegram user via
 
 ## CORS
 
-Cross-origin requests are controlled by the DB-backed `cors.allowed_origins` system
-config (default `["*"]`). When the admin or user frontend is deployed on a separate
-origin, add that origin (e.g. `https://admin.example.com`) via the system-config
-endpoint so the browser will allow credentialed requests.
+Cross-origin requests are controlled by the DB-backed `cors.allowed_origins` system config (default `["*"]`). When the
+admin or user frontend is deployed on a separate origin, add that origin (e.g. `https://admin.example.com`) via the
+system-config endpoint so the browser will allow credentialed requests.
 
 ## Database
 
 Defaults to a local SQLite file `vgate_manager.db`. To use PostgreSQL set
-`db.dialect: postgres` and `db.dsn` to a Postgres DSN. Tables are auto-migrated on
-startup (admins, nodes, users, plans, orders, traffic stats, refresh tokens, system
-config, …).
+`db.dialect: postgres` and `db.dsn` to a Postgres DSN. Tables are auto-migrated on startup (admins, nodes, users,
+user_nodes, user_node_traffics, traffic hourly stats, refresh tokens, system config, invite codes, email verifications,
+redemption codes and records, announcements, plans and plan prices, traffic packages, orders, tickets, ticket messages,
+and ticket read states, …).
 
 ## Testing
 
