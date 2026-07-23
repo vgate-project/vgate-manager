@@ -172,6 +172,33 @@ func (s *UserService) UpdateUsername(userID, username string) error {
 	return nil
 }
 
+// SetReminderChannel lets the caller choose how they receive traffic reminders.
+// channel is "" (auto), "email", "telegram", or "none". An empty/no-op write
+// is skipped.
+func (s *UserService) SetReminderChannel(userID, channel string) error {
+	switch channel {
+	case "", "email", "telegram", "none":
+		// valid
+	default:
+		return errors.New("invalid reminder_channel")
+	}
+	var u model.User
+	if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
+		return err
+	}
+	if u.ReminderChannel == channel {
+		return nil
+	}
+	res := s.db.Model(&model.User{}).Where("id = ?", userID).Update("reminder_channel", channel)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 // Update saves the full user state (PUT-replace). Password is handled by
 // SetPassword, not here.
 func (s *UserService) Update(user *model.User) error {
@@ -195,10 +222,10 @@ func (s *UserService) Delete(id string) error {
 // "zombie" (a cleanup candidate). A user matches only if it satisfies EVERY
 // selected criterion — the filter is an AND, not an OR.
 type ZombieFilter struct {
-	NeverUsedProxy bool // (up_total + down_total) = 0 AND last_traffic_at IS NULL
+	NeverUsedProxy  bool // (up_total + down_total) = 0 AND last_traffic_at IS NULL
 	EmailUnverified bool // email_verified = false
-	NoPaidOrders bool // no order with status = 'paid'
-	InactiveDays int // last_traffic_at older than N days (or NULL); 0 disables
+	NoPaidOrders    bool // no order with status = 'paid'
+	InactiveDays    int  // last_traffic_at older than N days (or NULL); 0 disables
 	// MinAccountDays keeps accounts younger than N days out of the cleanup so
 	// freshly registered users are never deleted. 0 disables the guard.
 	MinAccountDays int

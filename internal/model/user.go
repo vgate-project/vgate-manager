@@ -71,6 +71,15 @@ type User struct {
 	TelegramNotify        bool       `gorm:"default:true" json:"telegram_notify"`
 	TelegramBindToken     string     `gorm:"size:32;index" json:"-"`
 	TelegramBindExpiresAt *time.Time `json:"-"`
+	// ReminderChannel selects how this user receives traffic reminders.
+	// "" means auto (Telegram if linked, else email if verified, else none);
+	// explicit values are "email", "telegram", or "none" (disabled). The
+	// thresholds and cooldown are configured globally by an admin.
+	ReminderChannel string `gorm:"size:8;default:''" json:"reminder_channel"`
+	// LastTrafficReminderAt is the timestamp of the last traffic reminder sent
+	// to this user; it enforces the global cooldown (reminder.cooldown_days)
+	// so a user is not reminded more than once per cooldown window.
+	LastTrafficReminderAt *time.Time `json:"last_traffic_reminder_at,omitempty"`
 	CreatedAt             time.Time  `json:"created_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 }

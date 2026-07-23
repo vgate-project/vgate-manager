@@ -18,8 +18,11 @@ func NewPlanService(db *gorm.DB) *PlanService {
 }
 
 // List returns plans. When activeOnly is true only enabled plans (and their
-// enabled prices) are returned (used by the user-facing catalog).
-func (s *PlanService) List(activeOnly bool) ([]model.Plan, error) {
+// enabled prices) are returned (used by the user-facing catalog). When
+// activeOnly is true, the caller's currently owned disabled plan is appended
+// (with its enabled prices) if that plan allows off-shelf renewal, so its owner
+// can still renew it.
+func (s *PlanService) List(activeOnly bool, userID string) ([]model.Plan, error) {
 	var plans []model.Plan
 	q := s.db.Order("created_at ASC").Preload("Prices", func(tx *gorm.DB) *gorm.DB {
 		if activeOnly {
@@ -30,8 +33,50 @@ func (s *PlanService) List(activeOnly bool) ([]model.Plan, error) {
 	if activeOnly {
 		q = q.Where("enabled = ?", true)
 	}
-	err := q.Find(&plans).Error
-	return plans, err
+	if err := q.Find(&plans).Error; err != nil {
+		return nil, err
+	}
+	if activeOnly && userID != "" {
+		if extra, ok := s.currentPlanForUser(userID, plans); ok {
+			plans = append(plans, *extra)
+		}
+	}
+	return plans, nil
+}
+
+// currentPlanForUser returns the caller's currently active plan when it is a
+// disabled (off-shelf) plan that allows off-shelf renewal, and is not already
+// present in the active catalog, so the owner can still renew it. Enabled
+// current plans are already in the catalog, and a non-plan current product (or
+// no current product) yields nothing.
+func (s *PlanService) currentPlanForUser(userID string, existing []model.Plan) (*model.Plan, bool) {
+	var u model.User
+	if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
+		return nil, false
+	}
+	if u.CurrentProductKind != model.OrderKindPlan || u.CurrentProductID == "" {
+		return nil, false
+	}
+	for _, p := range existing {
+		if p.ID == u.CurrentProductID {
+			return nil, false
+		}
+	}
+	plan, err := s.Get(u.CurrentProductID)
+	if err != nil || plan.Enabled || !plan.AllowRenewOffShelf {
+		return nil, false
+	}
+	enabled := make([]model.PlanPrice, 0, len(plan.Prices))
+	for _, pr := range plan.Prices {
+		if pr.Enabled {
+			enabled = append(enabled, pr)
+		}
+	}
+	plan.Prices = enabled
+	if len(plan.Prices) == 0 {
+		return nil, false
+	}
+	return plan, true
 }
 
 func (s *PlanService) Get(id string) (*model.Plan, error) {
@@ -55,30 +100,44 @@ func (s *PlanService) loadEnabledPlan(id string) (*model.Plan, error) {
 	return plan, nil
 }
 
-// loadEnabledPlanPrice returns the price row only if it belongs to an enabled
-// plan and is itself enabled. Used when creating an order so a disabled price
-// (or a price for a disabled plan) cannot be purchased.
-func (s *PlanService) loadEnabledPlanPrice(planID, priceID string) (*model.PlanPrice, error) {
-	plan, err := s.loadEnabledPlan(planID)
-	if err != nil {
+// loadPlanPrice resolves the billing price for an order. When allowDisabled is
+// false the plan must be enabled — this is the legacy purchase gate that keeps
+// off-shelf plans out of the catalog. When allowDisabled is true (off-shelf
+// renewal), a disabled plan is accepted provided it still has at least one
+// enabled price; the requested price (or, when none is given, the first enabled
+// price) is returned.
+func (s *PlanService) loadPlanPrice(planID, priceID string, allowDisabled bool) (*model.PlanPrice, error) {
+	var plan model.Plan
+	if err := s.db.Preload("Prices", func(tx *gorm.DB) *gorm.DB {
+		return tx.Order("sort ASC, created_at ASC")
+	}).First(&plan, "id = ?", planID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("plan not found")
+		}
 		return nil, err
+	}
+	if !plan.Enabled && !allowDisabled {
+		return nil, errors.New("plan is not available")
 	}
 	var price model.PlanPrice
 	if priceID != "" {
 		// A specific price was requested; resolve it and ensure it belongs to
 		// this plan and is enabled.
-		err = s.db.Where("id = ? AND plan_id = ? AND enabled = ?", priceID, plan.ID, true).
+		err := s.db.Where("id = ? AND plan_id = ? AND enabled = ?", priceID, plan.ID, true).
 			First(&price).Error
+		if err != nil {
+			return nil, errors.New("plan price is not available")
+		}
 	} else {
 		// No price requested (e.g. an admin order created with only a plan id):
 		// fall back to the first enabled price for the plan so creation still
 		// succeeds instead of failing on a missing price id.
-		err = s.db.Where("plan_id = ? AND enabled = ?", plan.ID, true).
+		err := s.db.Where("plan_id = ? AND enabled = ?", plan.ID, true).
 			Order("sort ASC, created_at ASC").
 			First(&price).Error
-	}
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, errors.New("plan price is not available")
+		}
 	}
 	return &price, nil
 }

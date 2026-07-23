@@ -60,6 +60,16 @@ const (
 	// registrations a user may sponsor via self-generated invite codes. 0 disables
 	// user-generated invites (admins can still mint codes directly).
 	CfgKeyInviteDefaultUserQuota = "invite.default_user_quota"
+
+	// CfgKeyTrialEnabled toggles the automatic new-user trial ("true"|"false").
+	CfgKeyTrialEnabled = "user.trial_enabled"
+	// CfgKeyTrialQuotaBytes is the free traffic (bytes) granted to each new
+	// user on signup when the trial is enabled. 0 ⇒ no trial quota.
+	CfgKeyTrialQuotaBytes = "user.trial_quota_bytes"
+	// CfgKeyTrialDurationDays is the trial validity in days. 0 ⇒ no expiry
+	// (the trial lasts until the quota is consumed).
+	CfgKeyTrialDurationDays = "user.trial_duration_days"
+
 	// CfgKeySiteBaseURL is the public base URL of the user-facing SPA, used to
 	// build clickable links in emails (verification). Empty ⇒ emails fall back
 	// to printing the raw token with manual instructions.
@@ -132,6 +142,16 @@ const (
 	CfgKeyAlertTrafficExceeded = "telegram.alert_traffic_exceeded"
 	CfgKeyAlertAnnouncement    = "telegram.alert_announcement"
 	CfgKeyAlertTicket          = "telegram.alert_ticket"
+
+	// Traffic reminder config keys. These are global rules (set by an admin)
+	// for notifying users when they approach their quota — either by usage
+	// percentage or by how few days remain before the monthly reset. A
+	// per-user cooldown bounds the send frequency. Users pick the channel
+	// (email / Telegram) themselves on their profile.
+	CfgKeyReminderEnabled  = "reminder.enabled"        // "true" | "false" — master switch
+	CfgKeyReminderPct      = "reminder.pct_threshold"  // "80" — send when usage % of quota_bytes reaches this
+	CfgKeyReminderDays     = "reminder.days_threshold" // "3" — send when <= N days remain until reset (reset-enabled users)
+	CfgKeyReminderCooldown = "reminder.cooldown_days"  // "1" — min days between reminders per user
 )
 
 type SystemConfigService struct {
@@ -373,6 +393,43 @@ func (s *SystemConfigService) GetInviteDefaultUserQuota() int {
 	return n
 }
 
+// IsTrialEnabled reports whether new users receive an automatic trial grant.
+func (s *SystemConfigService) IsTrialEnabled() bool {
+	v, err := s.Get(CfgKeyTrialEnabled)
+	if err != nil || v == "" {
+		return false
+	}
+	return v == "true"
+}
+
+// GetTrialQuotaBytes returns the free traffic (bytes) granted to each new user
+// on signup when the trial is enabled. A non-positive value disables the grant.
+func (s *SystemConfigService) GetTrialQuotaBytes() int64 {
+	v, err := s.Get(CfgKeyTrialQuotaBytes)
+	if err != nil {
+		return 0
+	}
+	n, e := strconv.ParseInt(v, 10, 64)
+	if e != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// GetTrialDurationDays returns the trial validity window in days. 0 means no
+// expiry (the trial lasts until the quota is consumed).
+func (s *SystemConfigService) GetTrialDurationDays() int {
+	v, err := s.Get(CfgKeyTrialDurationDays)
+	if err != nil {
+		return 0
+	}
+	n, e := strconv.Atoi(v)
+	if e != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
 // GetSiteBaseURL returns the public base URL of the user SPA used to build
 // emailed links (may be empty).
 func (s *SystemConfigService) GetSiteBaseURL() string {
@@ -492,6 +549,60 @@ func (s *SystemConfigService) GetTelegramConfig() (TelegramConfig, error) {
 	return cfg, nil
 }
 
+// ReminderConfig is the resolved global traffic-reminder configuration sourced
+// from SystemConfig. Admins control the thresholds and cooldown; users pick
+// the channel on their profile.
+type ReminderConfig struct {
+	Enabled       bool // master switch (reminder.enabled)
+	PctThreshold  int  // send when usage reaches this % of quota_bytes (1-100)
+	DaysThreshold int  // send when <= this many days remain until reset (>=0)
+	CooldownDays  int  // min days between reminders for a single user (>=1)
+}
+
+// GetReminderConfig reads the traffic-reminder settings from SystemConfig,
+// falling back to safe defaults when keys are missing/invalid (disabled, 80%,
+// 3 days, 1-day cooldown). A disabled or malformed config simply means no
+// reminders are sent, so failures degrade safe.
+func (s *SystemConfigService) GetReminderConfig() (ReminderConfig, error) {
+	m, err := s.GetAll()
+	if err != nil {
+		return ReminderConfig{}, err
+	}
+	cfg := ReminderConfig{
+		Enabled:       m[CfgKeyReminderEnabled] == "true",
+		PctThreshold:  80,
+		DaysThreshold: 3,
+		CooldownDays:  1,
+	}
+	if v, ok := m[CfgKeyReminderPct]; ok {
+		if n, e := strconv.Atoi(v); e == nil {
+			cfg.PctThreshold = clampInt(n, 1, 100)
+		}
+	}
+	if v, ok := m[CfgKeyReminderDays]; ok {
+		if n, e := strconv.Atoi(v); e == nil && n >= 0 {
+			cfg.DaysThreshold = n
+		}
+	}
+	if v, ok := m[CfgKeyReminderCooldown]; ok {
+		if n, e := strconv.Atoi(v); e == nil && n >= 1 {
+			cfg.CooldownDays = n
+		}
+	}
+	return cfg, nil
+}
+
+// clampInt bounds n to the inclusive range [lo, hi].
+func clampInt(n, lo, hi int) int {
+	if n < lo {
+		return lo
+	}
+	if n > hi {
+		return hi
+	}
+	return n
+}
+
 // defaultConfigRows returns the migrated (DB-backed) runtime-config keys and
 // their hardcoded default values, sourced from config.DefaultConfig(). Only
 // these hot-reloadable keys are eligible to be written into the database;
@@ -521,6 +632,9 @@ func (s *SystemConfigService) defaultConfigRows() map[string]string {
 		CfgKeyRegisterRequireEmailVerify:   "false",
 		CfgKeyRegisterEmailSuffixWhitelist: "[]",
 		CfgKeyInviteDefaultUserQuota:       "5",
+		CfgKeyTrialEnabled:                 "false",
+		CfgKeyTrialQuotaBytes:              "1073741824", // 1 GiB
+		CfgKeyTrialDurationDays:            "7",
 		CfgKeySiteBaseURL:                  "",
 		CfgKeySiteName:                     "VGate",
 		CfgKeyEmailEnabled:                 "false",
@@ -549,6 +663,10 @@ func (s *SystemConfigService) defaultConfigRows() map[string]string {
 		CfgKeyAlertTrafficExceeded:         "false",
 		CfgKeyAlertAnnouncement:            "false",
 		CfgKeyAlertTicket:                  "false",
+		CfgKeyReminderEnabled:              "false",
+		CfgKeyReminderPct:                  "80",
+		CfgKeyReminderDays:                 "3",
+		CfgKeyReminderCooldown:             "1",
 	}
 }
 

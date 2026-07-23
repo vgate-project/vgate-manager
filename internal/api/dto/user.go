@@ -77,6 +77,15 @@ type UpdateProfileRequest struct {
 	Username *string `json:"username" binding:"required"`
 }
 
+// SetReminderChannelRequest is the self-service body for choosing how the user
+// receives traffic reminders. Channel is "" (auto), "email", "telegram", or
+// "none" (disabled); the actual value is validated by the handler. The empty
+// string is a valid value (meaning "auto"), so it is intentionally NOT marked
+// binding:"required" — gin's required tag rejects empty strings.
+type SetReminderChannelRequest struct {
+	Channel string `json:"channel"`
+}
+
 // --- User auth ---
 
 type UserLoginRequest struct {

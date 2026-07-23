@@ -19,6 +19,10 @@ type Plan struct {
 	SpeedLimitUpBps  int64 `gorm:"not null;default:0" json:"speed_limit_up_bps"`
 	SpeedLimitDownBps int64 `gorm:"not null;default:0" json:"speed_limit_down_bps"`
 	Enabled          bool  `gorm:"not null" json:"enabled"`
+	// AllowRenewOffShelf lets a user who already owns this plan renew it even
+	// after the plan is disabled (taken off the shelf). New users can never
+	// purchase an off-shelf plan regardless of this flag. Admins are exempt.
+	AllowRenewOffShelf bool `gorm:"not null;default:false" json:"allow_renew_off_shelf"`
 	// ResetEnabled / ResetPrice define an optional plan-scoped "traffic reset
 	// package": when enabled, a user with this plan active can self-purchase a
 	// reset that zeroes their used traffic (up_total/down_total) without

@@ -19,9 +19,11 @@ func NewPlanHandler(svc *service.PlanService) *PlanHandler {
 	return &PlanHandler{svc: svc}
 }
 
-// ListActive lists enabled plans (with their enabled prices) for users.
+// ListActive lists enabled plans (with their enabled prices) for users. When
+// the caller owns a disabled plan that allows off-shelf renewal, that plan is
+// appended so they can still renew it.
 func (h *PlanHandler) ListActive(c *gin.Context) {
-	plans, err := h.svc.List(true)
+	plans, err := h.svc.List(true, c.GetString("user_id"))
 	if writeErr(c, err) {
 		return
 	}
@@ -30,7 +32,7 @@ func (h *PlanHandler) ListActive(c *gin.Context) {
 
 // ListAll lists all plans (admin, includes disabled and their prices).
 func (h *PlanHandler) ListAll(c *gin.Context) {
-	plans, err := h.svc.List(false)
+	plans, err := h.svc.List(false, "")
 	if writeErr(c, err) {
 		return
 	}
@@ -55,14 +57,14 @@ func (h *PlanHandler) Create(c *gin.Context) {
 		return
 	}
 	plan := &model.Plan{
-		Name:             req.Name,
-		DisplayName:      req.DisplayName,
-		QuotaBytes:       req.QuotaBytes,
-		Description:      req.Description,
-		Level:            req.Level,
-		SpeedLimitUpBps:  req.SpeedLimitUpBps,
+		Name:              req.Name,
+		DisplayName:       req.DisplayName,
+		QuotaBytes:        req.QuotaBytes,
+		Description:       req.Description,
+		Level:             req.Level,
+		SpeedLimitUpBps:   req.SpeedLimitUpBps,
 		SpeedLimitDownBps: req.SpeedLimitDownBps,
-		Prices:           toPlanPrices(req.Prices),
+		Prices:            toPlanPrices(req.Prices),
 	}
 	plan.Enabled = true
 	if req.Enabled != nil {
@@ -70,6 +72,9 @@ func (h *PlanHandler) Create(c *gin.Context) {
 	}
 	plan.ResetEnabled = req.ResetEnabled
 	plan.ResetPrice = req.ResetPrice
+	if req.AllowRenewOffShelf != nil {
+		plan.AllowRenewOffShelf = *req.AllowRenewOffShelf
+	}
 	if err := h.svc.Create(plan); writeErr(c, err) {
 		return
 	}
@@ -100,6 +105,9 @@ func (h *PlanHandler) Update(c *gin.Context) {
 	}
 	plan.ResetEnabled = req.ResetEnabled
 	plan.ResetPrice = req.ResetPrice
+	if req.AllowRenewOffShelf != nil {
+		plan.AllowRenewOffShelf = *req.AllowRenewOffShelf
+	}
 	if err := h.svc.Update(plan); writeErr(c, err) {
 		return
 	}

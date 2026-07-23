@@ -18,15 +18,19 @@ type PlanPriceInput struct {
 // Enabled is a pointer so "false" is distinguishable from omitted (defaults to
 // true on create).
 type PlanRequest struct {
-	Name         string           `json:"name" binding:"required"`
-	DisplayName  string           `json:"display_name"` // optional gateway product name; empty ⇒ template/default
-	Prices       []PlanPriceInput `json:"prices" binding:"required,min=1"`
-	QuotaBytes      int64            `json:"quota_bytes"`
-	Description     string           `json:"description"`
-	Level           int              `json:"level"`
-	SpeedLimitUpBps int64            `json:"speed_limit_up_bps" binding:"gte=0"`
-	SpeedLimitDownBps int64          `json:"speed_limit_down_bps" binding:"gte=0"`
-	Enabled         *bool            `json:"enabled"`
-	ResetEnabled bool             `json:"reset_enabled"` // plan-scoped traffic reset package
-	ResetPrice   int64            `json:"reset_price"`   // cents
+	Name              string           `json:"name" binding:"required"`
+	DisplayName       string           `json:"display_name"` // optional gateway product name; empty ⇒ template/default
+	Prices            []PlanPriceInput `json:"prices" binding:"required,min=1"`
+	QuotaBytes        int64            `json:"quota_bytes"`
+	Description       string           `json:"description"`
+	Level             int              `json:"level"`
+	SpeedLimitUpBps   int64            `json:"speed_limit_up_bps" binding:"gte=0"`
+	SpeedLimitDownBps int64            `json:"speed_limit_down_bps" binding:"gte=0"`
+	Enabled           *bool            `json:"enabled"`
+	ResetEnabled      bool             `json:"reset_enabled"` // plan-scoped traffic reset package
+	ResetPrice        int64            `json:"reset_price"`   // cents
+	// AllowRenewOffShelf lets the plan's current owner renew it even after the
+	// plan is disabled (off-shelf). Pointer so an omitted value preserves the
+	// existing flag on update.
+	AllowRenewOffShelf *bool `json:"allow_renew_off_shelf"`
 }

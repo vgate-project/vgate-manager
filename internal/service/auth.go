@@ -488,6 +488,22 @@ func (a *AuthService) RegisterUser(username, email, password, inviteCode string)
 		MaxInvites:    defaultQuota,
 	}
 
+	// New-user trial: grant a one-time free quota + optional expiry. Because
+	// each person registers once, this is naturally one-time. QuotaResetEnabled
+	// stays false so the monthly reset (userSvc.ResetDueQuotas) never wipes the
+	// trial, and ExpireAt (when set) is honored by the node-sync filter in
+	// server_api.go (expire_at IS NULL OR expire_at > now()).
+	if a.sysCfg != nil && a.sysCfg.IsTrialEnabled() {
+		if q := a.sysCfg.GetTrialQuotaBytes(); q > 0 {
+			user.QuotaBytes = q
+			user.QuotaResetEnabled = false
+			if d := a.sysCfg.GetTrialDurationDays(); d > 0 {
+				e := time.Now().Add(time.Duration(d) * 24 * time.Hour)
+				user.ExpireAt = &e
+			}
+		}
+	}
+
 	if err = a.db.Create(user).Error; err != nil {
 		return nil, "", time.Time{}, false, err
 	}

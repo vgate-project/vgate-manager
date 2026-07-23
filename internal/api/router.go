@@ -4,6 +4,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -117,6 +118,21 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	telegramSvc.SetTicketService(ticketSvc)
 	telegramSvc.Run()
 
+	// Traffic reminder engine: hourly scan that notifies capped users when
+	// they cross the global usage-% threshold or have few days left before the
+	// monthly reset. Uses the same email/Telegram senders as the rest of the
+	// app, so the bot instance stays a singleton.
+	reminderSvc := service.NewReminderService(db, sysCfg)
+	reminderSvc.SetEmailService(emailSvc)
+	reminderSvc.SetTelegramService(telegramSvc)
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			reminderSvc.CheckAndSend(time.Now())
+		}
+	}()
+
 	// User-facing invite + announcement handlers (used in the userProtected group).
 	userInviteH := handler.NewUserInviteHandler(inviteSvc)
 	userRedemptionH := handler.NewUserRedemptionHandler(redemptionSvc)
@@ -186,6 +202,9 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		userProtected.POST("/telegram/bind", telegramUserH.Bind)
 		userProtected.POST("/telegram/unbind", telegramUserH.Unbind)
 		userProtected.PUT("/telegram/notify", telegramUserH.SetNotify)
+
+		// Traffic reminder channel selection (self-service).
+		userProtected.PUT("/reminder-channel", userH.SetReminderChannel)
 	}
 
 	// Admin API.

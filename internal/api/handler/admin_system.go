@@ -109,5 +109,34 @@ func (h *SystemHandler) Update(c *gin.Context) {
 			return
 		}
 	}
+	// Validate the traffic-reminder keys so a broken admin edit is rejected
+	// immediately rather than silently producing no reminders.
+	if v, ok := body[service.CfgKeyReminderEnabled]; ok {
+		if v != "true" && v != "false" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + service.CfgKeyReminderEnabled + ": must be true or false"})
+			return
+		}
+	}
+	if v, ok := body[service.CfgKeyReminderPct]; ok {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + service.CfgKeyReminderPct + ": must be an integer 1-100"})
+			return
+		}
+	}
+	if v, ok := body[service.CfgKeyReminderDays]; ok {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + service.CfgKeyReminderDays + ": must be an integer >= 0"})
+			return
+		}
+	}
+	if v, ok := body[service.CfgKeyReminderCooldown]; ok {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + service.CfgKeyReminderCooldown + ": must be an integer >= 1"})
+			return
+		}
+	}
 	c.JSON(http.StatusOK, body)
 }

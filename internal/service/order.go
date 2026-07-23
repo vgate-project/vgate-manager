@@ -88,8 +88,10 @@ func (s *OrderService) resolvePaymentSubject(kind, productName, period string, a
 	if displayName != "" {
 		return displayName, nil
 	}
-	if tmpl, err := s.sys.Get(CfgKeyPaymentProductName); err == nil && tmpl != "" {
-		return renderProductTemplate(tmpl, productName, period, amountCents), nil
+	if s.sys != nil {
+		if tmpl, err := s.sys.Get(CfgKeyPaymentProductName); err == nil && tmpl != "" {
+			return renderProductTemplate(tmpl, productName, period, amountCents), nil
+		}
 	}
 	switch kind {
 	case model.OrderKindTraffic:
@@ -178,7 +180,15 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 
 	switch p.Kind {
 	case model.OrderKindPlan:
-		price, err := s.planSvc.loadEnabledPlanPrice(p.PlanID, p.PlanPriceID)
+		// A disabled (off-shelf) plan may only be ordered by an admin, or by
+		// the user who already owns it when that plan allows off-shelf renewal.
+		plan, err := s.planSvc.Get(p.PlanID)
+		if err != nil {
+			return nil, nil, err
+		}
+		allowDisabled := isAdmin || (plan.AllowRenewOffShelf &&
+			user.CurrentProductID == p.PlanID && user.CurrentProductKind == model.OrderKindPlan)
+		price, err := s.planSvc.loadPlanPrice(p.PlanID, p.PlanPriceID, allowDisabled)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -187,10 +197,6 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		order.Period = price.Period
 		order.DurationDays = price.DurationDays
 		order.Amount = price.Price
-		plan, err := s.planSvc.Get(price.PlanID)
-		if err != nil {
-			return nil, nil, err
-		}
 		subject, err = s.resolvePaymentSubject(model.OrderKindPlan, plan.Name, price.Period, order.Amount, plan.DisplayName)
 		if err != nil {
 			return nil, nil, err
@@ -245,6 +251,16 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		return nil, nil, err
 	}
 	return order, directive, nil
+}
+
+// ownsPlan reports whether the user's currently active product is the given
+// plan. Used to allow an owner to pay/renew an off-shelf plan they already own.
+func (s *OrderService) ownsPlan(userID, planID string) (bool, error) {
+	var u model.User
+	if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
+		return false, err
+	}
+	return u.CurrentProductID == planID && u.CurrentProductKind == model.OrderKindPlan, nil
 }
 
 // Reconcile handles an async payment-gateway notification for platform. It
@@ -523,9 +539,21 @@ func (s *OrderService) PayMine(id, userID string) (*model.Order, *payment.PayDir
 			return nil, nil, err
 		}
 	default:
-		price, err := s.planSvc.loadEnabledPlanPrice(order.PlanID, order.PlanPriceID)
-		if err != nil {
-			return nil, nil, err
+		// A pending order for an off-shelf plan may still be paid when the
+		// orderer already owns that plan and the plan allows off-shelf
+		// renewal; new purchases of a now disabled plan stay blocked.
+		plan, perr := s.planSvc.Get(order.PlanID)
+		if perr != nil {
+			return nil, nil, perr
+		}
+		owner, oerr := s.ownsPlan(order.UserID, order.PlanID)
+		if oerr != nil {
+			return nil, nil, oerr
+		}
+		allowDisabled := owner && plan.AllowRenewOffShelf
+		price, perr := s.planSvc.loadPlanPrice(order.PlanID, order.PlanPriceID, allowDisabled)
+		if perr != nil {
+			return nil, nil, perr
 		}
 		plan, err := s.planSvc.Get(price.PlanID)
 		if err != nil {

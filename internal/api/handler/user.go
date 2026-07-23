@@ -45,6 +45,28 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// SetReminderChannel serves PUT /api/v1/user/reminder-channel — the caller
+// chooses how they receive traffic reminders ("", "email", "telegram", "none").
+func (h *UserHandler) SetReminderChannel(c *gin.Context) {
+	var req dto.SetReminderChannelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	switch req.Channel {
+	case "", "email", "telegram", "none":
+		// valid
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channel: must be \"\", email, telegram, or none"})
+		return
+	}
+	if err := h.userSvc.SetReminderChannel(c.GetString("user_id"), req.Channel); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // Subscribe serves GET /api/v1/user/subscribe — same payload as /sub/:sub_token
 // but authenticated by JWT rather than the subscription token. Format is chosen
 // by ?type= or User-Agent, identical to the public subscription endpoint.
