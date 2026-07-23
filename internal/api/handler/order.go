@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -85,7 +84,6 @@ func (h *OrderHandler) AdminCreate(c *gin.Context) {
 		PlanID:           req.PlanID,
 		PlanPriceID:      req.PlanPriceID,
 		TrafficPackageID: req.TrafficPackageID,
-		Channel:          req.Channel,
 		Platform:         req.Platform,
 	}))
 	if writeErr(c, err) {
@@ -153,24 +151,6 @@ func toOrderParams(c *gin.Context, req dto.CreateOrderRequest) service.CreateOrd
 		PlanID:           req.PlanID,
 		PlanPriceID:      req.PlanPriceID,
 		TrafficPackageID: req.TrafficPackageID,
-		Channel:          channelFromReq(req.Channel, c),
 		Platform:         req.Platform,
 	}
-}
-
-// channelFromReq returns the explicit channel if valid, otherwise detects it
-// from the User-Agent (mobile → wap, else pc). Channel only chooses the
-// redirect URL; it never affects amount or entitlement.
-func channelFromReq(channel string, c *gin.Context) string {
-	if channel == service.ChannelWap {
-		return service.ChannelWap
-	}
-	if channel == service.ChannelPC {
-		return service.ChannelPC
-	}
-	ua := strings.ToLower(c.Request.UserAgent())
-	if strings.Contains(ua, "mobile") || strings.Contains(ua, "android") || strings.Contains(ua, "iphone") {
-		return service.ChannelWap
-	}
-	return service.ChannelPC
 }

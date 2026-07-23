@@ -1,8 +1,9 @@
-// Package alipay implements payment.Provider for Alipay's website payment
-// (alipay.trade.page.pay / alipay.trade.wap.pay) and async notification
-// verification. Credentials are read lazily from SystemConfig (alipay.* keys)
-// through the injected ConfigSource, and the alipay client is cached and
-// rebuilt only when the config signature changes.
+// Package alipay implements payment.Provider for Alipay's offline QR pre-creation
+// (alipay.trade.precreate, 统一收单线下交易预创建) and async notification
+// verification. PayURL returns a "qr" PayDirective whose URL is the pre-created
+// QR code string the user scans to pay. Credentials are read lazily from
+// SystemConfig (alipay.* keys) through the injected ConfigSource, and the alipay
+// client is cached and rebuilt only when the config signature changes.
 package alipay
 
 import (
@@ -21,19 +22,12 @@ import (
 // Platform is the canonical identifier stored on Order.Platform.
 const Platform = model.OrderPlatformAlipay
 
-// channel values stored on Order.Channel (alipay-specific page style).
-const (
-	channelPC  = "pc"
-	channelWap = "wap"
-)
-
 // Config holds alipay credentials read from SystemConfig (alipay.* keys).
 type Config struct {
 	AppID      string
 	PrivateKey string
 	PublicKey  string
 	NotifyURL  string
-	ReturnURL  string
 	Sandbox    bool
 }
 
@@ -70,7 +64,6 @@ func (p *Provider) loadConfig() (Config, error) {
 		PrivateKey: m["alipay.private_key"],
 		PublicKey:  m["alipay.public_key"],
 		NotifyURL:  m["alipay.notify_url"],
-		ReturnURL:  m["alipay.return_url"],
 		Sandbox:    m["alipay.sandbox"] == "true",
 	}, nil
 }
@@ -112,7 +105,9 @@ func (p *Provider) client() (*alipay.Client, error) {
 	return client, nil
 }
 
-// PayURL implements payment.Provider.
+// PayURL implements payment.Provider. It creates an offline pre-creation order
+// (alipay.trade.precreate) and returns the generated QR code string as a "qr"
+// PayDirective that the frontend renders for the user to scan.
 func (p *Provider) PayURL(order *model.Order, subject string) (*payment.PayDirective, error) {
 	client, err := p.client()
 	if err != nil {
@@ -122,40 +117,20 @@ func (p *Provider) PayURL(order *model.Order, subject string) (*payment.PayDirec
 	if err != nil {
 		return nil, err
 	}
-	if order.Channel == channelWap {
-		biz := alipay.TradeWapPay{
-			Trade: alipay.Trade{
-				Subject:        subject,
-				OutTradeNo:     order.OutTradeNo,
-				TotalAmount:    yuan(order.Amount),
-				ProductCode:    "QUICK_WAP_WAY",
-				NotifyURL:      cfg.NotifyURL,
-				ReturnURL:      cfg.ReturnURL,
-				TimeoutExpress: "30m",
-			},
-		}
-		u, err := client.TradeWapPay(biz)
-		if err != nil {
-			return nil, err
-		}
-		return &payment.PayDirective{Kind: "redirect", URL: u.String()}, nil
-	}
-	biz := alipay.TradePagePay{
+	biz := alipay.TradePreCreate{
 		Trade: alipay.Trade{
 			Subject:        subject,
 			OutTradeNo:     order.OutTradeNo,
 			TotalAmount:    yuan(order.Amount),
-			ProductCode:    "FAST_INSTANT_TRADE_PAY",
 			NotifyURL:      cfg.NotifyURL,
-			ReturnURL:      cfg.ReturnURL,
 			TimeoutExpress: "30m",
 		},
 	}
-	u, err := client.TradePagePay(biz)
+	rsp, err := client.TradePreCreate(context.Background(), biz)
 	if err != nil {
 		return nil, err
 	}
-	return &payment.PayDirective{Kind: "redirect", URL: u.String()}, nil
+	return &payment.PayDirective{Kind: "qr", URL: rsp.QRCode}, nil
 }
 
 // VerifyNotify implements payment.Provider. Alipay posts an

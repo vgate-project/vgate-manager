@@ -48,7 +48,6 @@ type Order struct {
 	Platform         string     `gorm:"index;size:16" json:"platform"` // payment gateway: alipay | manual | (future)
 	OutTradeNo       string     `gorm:"uniqueIndex;size:64;not null" json:"out_trade_no"`
 	TradeNo          string     `gorm:"size:64" json:"trade_no,omitempty"` // gateway-assigned transaction id
-	Channel          string     `gorm:"size:16" json:"channel"`            // alipay-only: "pc" | "wap"
 	PaidAt           *time.Time `json:"paid_at,omitempty"`
 	ExpiredAt        *time.Time `gorm:"index" json:"expired_at,omitempty"` // cron close threshold
 	CreatedAt        time.Time  `json:"created_at"`

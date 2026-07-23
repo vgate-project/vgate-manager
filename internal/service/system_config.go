@@ -228,7 +228,6 @@ type AlipayConfig struct {
 	PrivateKey string
 	PublicKey  string
 	NotifyURL  string
-	ReturnURL  string
 	Sandbox    bool
 }
 
@@ -238,7 +237,6 @@ const (
 	AlipayKeyPrivateKey = "alipay.private_key"
 	AlipayKeyPublicKey  = "alipay.public_key"
 	AlipayKeyNotifyURL  = "alipay.notify_url"
-	AlipayKeyReturnURL  = "alipay.return_url"
 	AlipayKeySandbox    = "alipay.sandbox" // "true" | "false"
 )
 
@@ -254,7 +252,6 @@ func (s *SystemConfigService) GetAlipayConfig() (AlipayConfig, error) {
 		PrivateKey: m[AlipayKeyPrivateKey],
 		PublicKey:  m[AlipayKeyPublicKey],
 		NotifyURL:  m[AlipayKeyNotifyURL],
-		ReturnURL:  m[AlipayKeyReturnURL],
 		Sandbox:    m[AlipayKeySandbox] == "true",
 	}, nil
 }

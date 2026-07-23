@@ -17,11 +17,6 @@ import (
 )
 
 const (
-	// ChannelPC is the desktop website payment (alipay.trade.page.pay).
-	ChannelPC = "pc"
-	// ChannelWap is the mobile website payment (alipay.trade.wap.pay).
-	ChannelWap = "wap"
-
 	// orderTimeout is how long an order stays payable before the cron closes it.
 	orderTimeout = 30 * time.Minute
 )
@@ -47,7 +42,6 @@ type CreateOrderParams struct {
 	PlanID           string // required when Kind=plan
 	PlanPriceID      string // required when Kind=plan
 	TrafficPackageID string // required when Kind=traffic
-	Channel          string // optional: "pc" | "wap" | "" (auto by UA)
 	Platform         string // optional: payment gateway; defaults to alipay
 }
 
@@ -156,13 +150,6 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 	if platform == "" {
 		platform = model.OrderPlatformAlipay
 	}
-	// The Channel (pc/wap) only selects the alipay redirect style; other
-	// gateways ignore it, so we coerce it to pc/wap only for alipay.
-	if platform == model.OrderPlatformAlipay {
-		if p.Channel != ChannelWap {
-			p.Channel = ChannelPC
-		}
-	}
 
 	order := &model.Order{
 		ID:         util.NewOrderID(),
@@ -171,7 +158,6 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		Status:     model.OrderStatusPending,
 		Platform:   platform,
 		OutTradeNo: util.RandomToken(16),
-		Channel:    p.Channel,
 	}
 	now := time.Now()
 	order.ExpiredAt = new(now.Add(orderTimeout))

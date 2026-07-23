@@ -9,7 +9,6 @@ type CreateOrderRequest struct {
 	PlanID           string `json:"plan_id"`                 // required when kind=plan
 	PlanPriceID      string `json:"plan_price_id"`           // required when kind=plan
 	TrafficPackageID string `json:"traffic_package_id"`      // required when kind=traffic
-	Channel          string `json:"channel"`                 // optional: "pc" | "wap" | "" (auto by UA)
 	Platform         string `json:"platform"`                // optional: payment gateway; defaults to alipay
 }
 
@@ -19,7 +18,6 @@ type AdminCreateOrderRequest struct {
 	PlanID           string `json:"plan_id"`
 	PlanPriceID      string `json:"plan_price_id"`
 	TrafficPackageID string `json:"traffic_package_id"`
-	Channel          string `json:"channel"`
 	Platform         string `json:"platform"` // optional: payment gateway; defaults to alipay
 }
 

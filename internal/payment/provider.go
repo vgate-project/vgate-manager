@@ -14,12 +14,12 @@ import (
 
 // PayDirective tells the frontend how to present the payment to the user.
 type PayDirective struct {
-	// Kind is "redirect" (open URL in a browser, e.g. alipay page / stripe
-	// checkout) or "qr" (render URL as a QR code the user scans, e.g. wechat
-	// NATIVE code_url).
+	// Kind is "redirect" (open URL in a browser, e.g. stripe checkout) or
+	// "qr" (render URL as a QR code the user scans, e.g. alipay
+	// trade.precreate qr_code / wechat NATIVE code_url).
 	Kind string
 	// URL is the browser redirect URL when Kind="redirect", or the QR code
-	// content (e.g. a wechat code_url) when Kind="qr".
+	// content (e.g. an alipay qr_code or wechat code_url) when Kind="qr".
 	URL string
 }
 
