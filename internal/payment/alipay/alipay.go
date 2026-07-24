@@ -1,7 +1,8 @@
 // Package alipay implements payment.Provider for Alipay's offline QR pre-creation
 // (alipay.trade.precreate, 统一收单线下交易预创建) and async notification
-// verification. PayURL returns a "qr" PayDirective whose URL is the pre-created
-// QR code string the user scans to pay. Credentials are read lazily from
+// verification, using github.com/go-pay/gopay/alipay (classic RSA2 public-key
+// gateway). PayURL returns a "qr" PayDirective whose URL is the pre-created QR
+// code string the user scans to pay. Credentials are read lazily from
 // SystemConfig (alipay.* keys) through the injected ConfigSource, and the alipay
 // client is cached and rebuilt only when the config signature changes.
 package alipay
@@ -13,7 +14,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/smartwalle/alipay/v3"
+	"github.com/go-pay/gopay"
+	"github.com/go-pay/gopay/alipay"
 
 	"github.com/vgate-project/vgate-manager/internal/model"
 	"github.com/vgate-project/vgate-manager/internal/payment"
@@ -93,11 +95,8 @@ func (p *Provider) client() (*alipay.Client, error) {
 	if p.cache != nil && p.ckey == key {
 		return p.cache, nil
 	}
-	client, err := alipay.New(cfg.AppID, cfg.PrivateKey, !cfg.Sandbox)
+	client, err := alipay.NewClient(cfg.AppID, cfg.PrivateKey, !cfg.Sandbox)
 	if err != nil {
-		return nil, err
-	}
-	if err := client.LoadAliPayPublicKey(cfg.PublicKey); err != nil {
 		return nil, err
 	}
 	p.cache = client
@@ -117,39 +116,45 @@ func (p *Provider) PayURL(order *model.Order, subject string) (*payment.PayDirec
 	if err != nil {
 		return nil, err
 	}
-	biz := alipay.TradePreCreate{
-		Trade: alipay.Trade{
-			Subject:        subject,
-			OutTradeNo:     order.OutTradeNo,
-			TotalAmount:    yuan(order.Amount),
-			NotifyURL:      cfg.NotifyURL,
-			TimeoutExpress: "30m",
-		},
-	}
-	rsp, err := client.TradePreCreate(context.Background(), biz)
+	bm := make(gopay.BodyMap)
+	bm.Set("out_trade_no", order.OutTradeNo).
+		Set("total_amount", yuan(order.Amount)).
+		Set("subject", subject).
+		Set("notify_url", cfg.NotifyURL).
+		Set("timeout_express", "30m")
+	rsp, err := client.TradePrecreate(context.Background(), bm)
 	if err != nil {
 		return nil, err
 	}
-	return &payment.PayDirective{Kind: "qr", URL: rsp.QRCode}, nil
+	if rsp.Response == nil || rsp.Response.Code != "10000" {
+		msg := ""
+		if rsp.Response != nil {
+			msg = rsp.Response.Msg + " " + rsp.Response.SubMsg
+		}
+		return nil, errors.New("alipay precreate failed: " + msg)
+	}
+	return &payment.PayDirective{Kind: "qr", URL: rsp.Response.QrCode}, nil
 }
 
 // VerifyNotify implements payment.Provider. Alipay posts an
-// application/x-www-form-urlencoded body; we parse it and verify the signature.
+// application/x-www-form-urlencoded body; we parse it, verify the signature
+// with the configured alipay public key (public-key mode), then read the
+// trade fields.
 func (p *Provider) VerifyNotify(ctx context.Context, r *http.Request) (outTradeNo, tradeNo string, paid bool, err error) {
-	if err := r.ParseForm(); err != nil {
-		return "", "", false, err
-	}
-	client, err := p.client()
+	bm, err := alipay.ParseNotifyToBodyMap(r)
 	if err != nil {
 		return "", "", false, err
 	}
-	if err := client.VerifySign(ctx, r.Form); err != nil {
+	cfg, err := p.loadConfig()
+	if err != nil {
 		return "", "", false, err
 	}
-	params := r.Form
-	outTradeNo = params.Get("out_trade_no")
-	tradeNo = params.Get("trade_no")
-	tradeStatus := params.Get("trade_status")
+	if ok, verr := alipay.VerifySign(cfg.PublicKey, bm); verr != nil || !ok {
+		return "", "", false, verr
+	}
+	outTradeNo = bm.GetString("out_trade_no")
+	tradeNo = bm.GetString("trade_no")
+	tradeStatus := bm.GetString("trade_status")
 	// Only successful payments grant benefits; ignore transient states so they
 	// don't flip the order to paid.
 	if tradeStatus != "TRADE_SUCCESS" && tradeStatus != "TRADE_FINISHED" {

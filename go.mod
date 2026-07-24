@@ -12,7 +12,6 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/resend/resend-go/v3 v3.10.1
 	github.com/sirupsen/logrus v1.9.4
-	github.com/smartwalle/alipay/v3 v3.2.30
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stripe/stripe-go/v82 v82.5.1
@@ -67,9 +66,6 @@ require (
 	github.com/quic-go/quic-go v0.60.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
-	github.com/smartwalle/ncrypto v1.0.4 // indirect
-	github.com/smartwalle/ngx v1.1.1 // indirect
-	github.com/smartwalle/nsign v1.0.9 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
