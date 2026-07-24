@@ -66,6 +66,11 @@ func NewRedemptionID() string {
 	return ulid.Make().String()
 }
 
+// NewBalanceTxID returns a ULID for a BalanceTransaction primary key.
+func NewBalanceTxID() string {
+	return ulid.Make().String()
+}
+
 // NewTicketID returns a ULID for a Ticket primary key.
 func NewTicketID() string {
 	return ulid.Make().String()

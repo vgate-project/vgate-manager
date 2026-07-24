@@ -146,7 +146,7 @@ func TestUserLoginAllowsUnverifiedButBlocksPurchase(t *testing.T) {
 	}
 
 	// But a self-service purchase is blocked until the email is verified.
-	orderSvc := service.NewOrderService(db, nil, payment.NewRegistry(nil))
+	orderSvc := service.NewOrderService(db, nil, payment.NewRegistry(nil), service.NewBalanceService(db))
 	pkg := model.TrafficPackage{ID: "tp1", Name: "pkg", QuotaBytes: 1 << 30, Price: 100, ValidityDays: 7, Enabled: true}
 	if err := db.Create(&pkg).Error; err != nil {
 		t.Fatalf("create package: %v", err)

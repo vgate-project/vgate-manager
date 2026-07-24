@@ -266,7 +266,10 @@ func (s *RedemptionService) applyBenefit(tx *gorm.DB, user *model.User, code *mo
 			return "", errors.New("plan not found")
 		}
 		duration := planDurationDays(plan)
-		if err := applyPlanEffect(tx, user, plan, duration); err != nil {
+		// A redeemed plan is applied like a renewal (period stacks on the old
+		// expiry). paidCents is 0 so a later change does not credit a plan the
+		// user obtained for free.
+		if err := applyPlanEffect(tx, user, plan, duration, 0, defaultBase(user)); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("applied plan %q (%d days)", plan.Name, duration), nil

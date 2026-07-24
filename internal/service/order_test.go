@@ -16,8 +16,9 @@ func orderTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open db: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&model.SystemConfig{}, &model.Plan{}, &model.PlanPrice{},
+		&model.SystemConfig{}, &model.User{}, &model.Plan{}, &model.PlanPrice{},
 		&model.TrafficPackage{}, &model.Order{},
+		&model.BalanceTransaction{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -27,7 +28,7 @@ func orderTestDB(t *testing.T) *gorm.DB {
 func newOrderService(t *testing.T, db *gorm.DB) *OrderService {
 	t.Helper()
 	sys := NewSystemConfigService(db)
-	return NewOrderService(db, sys, nil)
+	return NewOrderService(db, sys, nil, NewBalanceService(db))
 }
 
 func TestRenderProductTemplate(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,24 +46,41 @@ type CreateOrderParams struct {
 	Platform         string // optional: payment gateway; defaults to alipay
 }
 
+// ChangePlanResult is returned by ChangePlan and describes what happened:
+// whether the switch is immediate, how much of the old plan was credited to
+// the wallet, and the net charge. For an immediate switch an Order (and
+// possibly a PayURL) is returned just like Create.
+type ChangePlanResult struct {
+	Order          *model.Order `json:"order,omitempty"`
+	PayURL         string       `json:"pay_url"`
+	PayMode        string       `json:"pay_mode"` // "redirect" | "qr" | "" when already paid
+	Paid           bool         `json:"paid"`     // true when fully covered by wallet
+	CreditCents    int64        `json:"credit_cents"`
+	NetChargeCents int64        `json:"net_charge_cents"` // plan price (difference for upgrades)
+	Immediate      bool         `json:"immediate"`
+}
+
 // OrderService handles plan/traffic purchases, payment-url generation,
-// async notify reconciliation, and expired-order cleanup.
+// async notify reconciliation, plan changes with proration, and expired-order
+// cleanup.
 type OrderService struct {
 	db          *gorm.DB
 	sys         *SystemConfigService
 	planSvc     *PlanService
 	trafficSvc  *TrafficPackageService
 	payments    *payment.Registry
+	balanceSvc  *BalanceService
 	telegramSvc *TelegramService
 }
 
-func NewOrderService(db *gorm.DB, sys *SystemConfigService, payments *payment.Registry) *OrderService {
+func NewOrderService(db *gorm.DB, sys *SystemConfigService, payments *payment.Registry, balanceSvc *BalanceService) *OrderService {
 	return &OrderService{
 		db:         db,
 		sys:        sys,
 		planSvc:    NewPlanService(db),
 		trafficSvc: NewTrafficPackageService(db),
 		payments:   payments,
+		balanceSvc: balanceSvc,
 	}
 }
 
@@ -72,12 +90,7 @@ func (s *OrderService) SetTelegramService(svc *TelegramService) {
 	s.telegramSvc = svc
 }
 
-// resolvePaymentSubject picks the product name shown on the payment gateway,
-// with the following precedence:
-//  1. the per-product DisplayName (set on the plan or traffic package);
-//  2. the global template payment.product_name_template (rendered with
-//     placeholders);
-//  3. the built-in default subject.
+// resolvePaymentSubject picks the product name shown on the payment gateway.
 func (s *OrderService) resolvePaymentSubject(kind, productName, period string, amountCents int64, displayName string) (string, error) {
 	if displayName != "" {
 		return displayName, nil
@@ -98,8 +111,7 @@ func (s *OrderService) resolvePaymentSubject(kind, productName, period string, a
 }
 
 // renderProductTemplate substitutes the supported placeholders in the global
-// product-name template. {plan} = product name, {period} = billing period
-// (empty for traffic/reset), {amount} = order amount in yuan (2 decimals).
+// product-name template.
 func renderProductTemplate(tmpl, productName, period string, amountCents int64) string {
 	amount := strconv.FormatFloat(float64(amountCents)/100.0, 'f', 2, 64)
 	return strings.NewReplacer(
@@ -112,7 +124,7 @@ func renderProductTemplate(tmpl, productName, period string, amountCents int64) 
 // Create builds an order for the given user and returns a PayDirective telling
 // the frontend how to collect payment. The amount is taken from the
 // authoritative source (plan price or traffic package); any client-supplied
-// amount is ignored.
+// amount is ignored. Any spendable wallet balance is applied first.
 func (s *OrderService) Create(userID string, p CreateOrderParams) (*model.Order, *payment.PayDirective, error) {
 	return s.createFor(userID, p, false)
 }
@@ -134,10 +146,6 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		return nil, nil, ErrPendingOrderExists
 	}
 
-	// Self-service purchases require a verified email; admins placing an order
-	// on a user's behalf (isAdmin) are exempt. Traffic itself is also gated at
-	// the node (server_api.go filters on email_verified), so an unverified
-	// account can log in and manage its profile but cannot buy or consume.
 	var user model.User
 	if err := s.db.First(&user, "id = ?", userID).Error; err != nil {
 		return nil, nil, err
@@ -151,23 +159,23 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		platform = model.OrderPlatformAlipay
 	}
 
-	order := &model.Order{
-		ID:         util.NewOrderID(),
-		UserID:     userID,
-		Kind:       p.Kind,
-		Status:     model.OrderStatusPending,
-		Platform:   platform,
-		OutTradeNo: util.RandomToken(16),
-	}
+	// Build the order with its gross amount before any wallet deduction.
 	now := time.Now()
-	order.ExpiredAt = new(now.Add(orderTimeout))
+	order := &model.Order{
+		ID:                  util.NewOrderID(),
+		UserID:              userID,
+		Kind:                p.Kind,
+		Status:              model.OrderStatusPending,
+		Platform:            platform,
+		OutTradeNo:          util.RandomToken(16),
+		ExpiredAt:           new(now.Add(orderTimeout)),
+		ExtendFromOldExpiry: true,
+	}
 
 	var subject string
 
 	switch p.Kind {
 	case model.OrderKindPlan:
-		// A disabled (off-shelf) plan may only be ordered by an admin, or by
-		// the user who already owns it when that plan allows off-shelf renewal.
 		plan, err := s.planSvc.Get(p.PlanID)
 		if err != nil {
 			return nil, nil, err
@@ -207,8 +215,6 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		if !plan.ResetEnabled {
 			return nil, nil, errors.New("plan has no traffic reset package")
 		}
-		// Self-service reset requires the user's active product to be this plan.
-		// Admins creating on a user's behalf skip this ownership check.
 		if !isAdmin {
 			if user.CurrentProductID != plan.ID {
 				return nil, nil, errors.New("traffic reset is only available for your active plan")
@@ -224,23 +230,64 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 		return nil, nil, ErrInvalidOrderKind
 	}
 
-	if err := s.db.Create(order).Error; err != nil {
+	// Apply the wallet: deduct whatever balance covers from the gross amount.
+	gross := order.Amount
+	var created *model.Order
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var u model.User
+		if err := tx.First(&u, "id = ?", userID).Error; err != nil {
+			return err
+		}
+		used := int64(0)
+		if u.BalanceCents > 0 {
+			used = min(u.BalanceCents, gross)
+		}
+		if used > 0 {
+			if _, err := s.balanceSvc.Debit(tx, userID, used, model.BalanceReasonPurchase, order.ID, "wallet payment"); err != nil {
+				return err
+			}
+		}
+		if used == gross {
+			order.Status = model.OrderStatusPaid
+			order.Platform = model.OrderPlatformBalance
+			paidAt := time.Now()
+			order.PaidAt = &paidAt
+		} else {
+			order.Amount = gross - used
+		}
+		if err := tx.Create(order).Error; err != nil {
+			return err
+		}
+		if used == gross {
+			// Fully paid from wallet: grant the entitlement immediately.
+			if err := applyOrderEffect(tx, order); err != nil {
+				return err
+			}
+		}
+		created = order
+		return nil
+	})
+	if err != nil {
 		return nil, nil, err
 	}
 
-	prov, err := s.payments.Get(order.Platform)
+	if created.Status == model.OrderStatusPaid {
+		// No gateway step required.
+		return created, &payment.PayDirective{}, nil
+	}
+	prov, err := s.payments.Get(created.Platform)
 	if err != nil {
 		return nil, nil, err
 	}
-	directive, err := prov.PayURL(order, subject)
+	directive, err := prov.PayURL(created, subject)
 	if err != nil {
 		return nil, nil, err
 	}
-	return order, directive, nil
+	return created, directive, nil
 }
 
 // ownsPlan reports whether the user's currently active product is the given
-// plan. Used to allow an owner to pay/renew an off-shelf plan they already own.
+// plan.
 func (s *OrderService) ownsPlan(userID, planID string) (bool, error) {
 	var u model.User
 	if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
@@ -268,7 +315,6 @@ func (s *OrderService) Reconcile(ctx context.Context, platform string, r *http.R
 	if err := s.markPaid(outTradeNo, tradeNo, platform); err != nil {
 		return err
 	}
-	// Best-effort admin alert once the payment is applied.
 	var o model.Order
 	if err := s.db.Where("out_trade_no = ?", outTradeNo).First(&o).Error; err == nil {
 		s.alertOrderPaid(&o)
@@ -281,9 +327,6 @@ func (s *OrderService) Reconcile(ctx context.Context, platform string, r *http.R
 func (s *OrderService) markPaid(outTradeNo, tradeNo, platform string) error {
 	now := time.Now()
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		// Idempotent guard: only the writer that flips pending→paid continues.
-		// SQLite-safe (no SELECT ... FOR UPDATE); concurrent notifies that
-		// lose the race see RowsAffected==0 and bail out without re-applying.
 		res := tx.Model(&model.Order{}).
 			Where("out_trade_no = ? AND status = ?", outTradeNo, model.OrderStatusPending).
 			Updates(map[string]any{
@@ -303,36 +346,11 @@ func (s *OrderService) markPaid(outTradeNo, tradeNo, platform string) error {
 		if err := tx.Where("out_trade_no = ?", outTradeNo).First(&order).Error; err != nil {
 			return err
 		}
-		var user model.User
-		if err := tx.Where("id = ?", order.UserID).First(&user).Error; err != nil {
-			return err
-		}
-
-		switch order.Kind {
-		case model.OrderKindTraffic:
-			var pkg model.TrafficPackage
-			if err := tx.Where("id = ?", order.TrafficPackageID).First(&pkg).Error; err != nil {
-				return err
-			}
-			return applyTrafficEffect(tx, &user, &pkg, order.ValidityDays)
-		case model.OrderKindReset:
-			var plan model.Plan
-			if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
-				return err
-			}
-			return applyResetEffect(tx, &user, &plan)
-		default: // plan
-			var plan model.Plan
-			if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
-				return err
-			}
-			return applyPlanEffect(tx, &user, &plan, order.DurationDays)
-		}
+		return applyOrderEffect(tx, &order)
 	})
 }
 
-// alertOrderPaid emits the admin "order paid" alert outside the transaction
-// once the purchase effect has been applied. It is best-effort.
+// alertOrderPaid emits the admin "order paid" alert outside the transaction.
 func (s *OrderService) alertOrderPaid(order *model.Order) {
 	if s.telegramSvc == nil {
 		return
@@ -341,63 +359,352 @@ func (s *OrderService) alertOrderPaid(order *model.Order) {
 		fmt.Sprintf("Order paid: user %s, amount %d (%s)", order.UserID, order.Amount, order.Kind))
 }
 
-// applyPlanEffect extends the user's expiry from the later of now/existing
-// expiry, sets the user's quota to the plan's quota (replacing any prior
-// quota, not adding to it), resets the cumulative used traffic (UpTotal/
-// DownTotal) so the user starts the new plan with a full quota, and sets the
-// user's level to the plan's level (a subscription replaces the level). Called
-// inside a transaction.
-func applyPlanEffect(tx *gorm.DB, user *model.User, plan *model.Plan, durationDays int) error {
+// defaultBase returns the time a new plan period should start from for a
+// normal purchase/renewal: the later of now and the existing expiry (so the
+// new period stacks onto the old one).
+func defaultBase(user *model.User) time.Time {
 	now := time.Now()
-	base := now
 	if user.ExpireAt != nil && user.ExpireAt.After(now) {
-		base = *user.ExpireAt
+		return *user.ExpireAt
 	}
-	user.ExpireAt = new(base.AddDate(0, 0, durationDays))
-	user.QuotaBytes = plan.QuotaBytes
-	user.UpTotal = 0
-	user.DownTotal = 0
-	user.LastResetAt = &now
-	user.Level = plan.Level
-	user.SpeedLimitUpBps = plan.SpeedLimitUpBps
-	user.SpeedLimitDownBps = plan.SpeedLimitDownBps
-	user.CurrentProductID = plan.ID
-	user.CurrentProductKind = model.OrderKindPlan
-	return tx.Save(user).Error
+	return now
+}
+
+// applyOrderEffect loads the purchased product for the order and applies its
+// entitlement effect. It is the single source of truth shared by markPaid,
+// AdminUpdateStatus, and the wallet-paid path in createFor.
+func applyOrderEffect(tx *gorm.DB, order *model.Order) error {
+	var user model.User
+	if err := tx.Where("id = ?", order.UserID).First(&user).Error; err != nil {
+		return err
+	}
+	switch order.Kind {
+	case model.OrderKindTraffic:
+		var pkg model.TrafficPackage
+		if err := tx.Where("id = ?", order.TrafficPackageID).First(&pkg).Error; err != nil {
+			return err
+		}
+		return applyTrafficEffect(tx, &user, &pkg, order.ValidityDays)
+	case model.OrderKindReset:
+		var plan model.Plan
+		if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
+			return err
+		}
+		return applyResetEffect(tx, &user, &plan)
+	default: // plan
+		var plan model.Plan
+		if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
+			return err
+		}
+		var price model.PlanPrice
+		if err := tx.Where("id = ?", order.PlanPriceID).First(&price).Error; err != nil {
+			return err
+		}
+		base := defaultBase(&user)
+		if !order.ExtendFromOldExpiry {
+			base = time.Now()
+		}
+		return applyPlanEffect(tx, &user, &plan, order.DurationDays, price.Price, base)
+	}
+}
+
+// applyPlanEffect applies a plan to the user. paidCents is the gross price of
+// the entitlement (used for later proration); base is the start of the new
+// period (now for an upgrade that bought out the old period, otherwise the
+// existing expiry). It is called inside a transaction.
+//
+// It uses a targeted column update (not Save) so it never clobbers columns the
+// caller may have just mutated in the same transaction — notably balance_cents,
+// which a wallet debit has already written.
+func applyPlanEffect(tx *gorm.DB, user *model.User, plan *model.Plan, durationDays int, paidCents int64, base time.Time) error {
+	now := time.Now()
+	return tx.Model(user).Updates(map[string]any{
+		"expire_at":                  new(base.AddDate(0, 0, durationDays)),
+		"quota_bytes":                plan.QuotaBytes,
+		"up_total":                   0,
+		"down_total":                 0,
+		"last_reset_at":              &now,
+		"level":                      plan.Level,
+		"speed_limit_up_bps":         plan.SpeedLimitUpBps,
+		"speed_limit_down_bps":       plan.SpeedLimitDownBps,
+		"current_product_id":         plan.ID,
+		"current_product_kind":       model.OrderKindPlan,
+		"current_plan_paid_cents":    paidCents,
+		"current_plan_duration_days": durationDays,
+	}).Error
 }
 
 // applyTrafficEffect adds the package's quota. When validityDays > 0 it also
-// extends the user's ExpireAt so the traffic is usable for that window; when 0
-// the quota is added with no extra expiry (existing ExpireAt still gates use).
-// Buying a traffic package opts the user OUT of the global monthly reset
-// (quota_reset_enabled = false): a package is a one-time add-on consumed until
-// exhausted or expiry, and must NOT be refreshed by the monthly reset.
+// extends the user's ExpireAt so the traffic is usable for that window.
 func applyTrafficEffect(tx *gorm.DB, user *model.User, pkg *model.TrafficPackage, validityDays int) error {
 	user.QuotaBytes += pkg.QuotaBytes
 	user.QuotaResetEnabled = false
 	user.CurrentProductID = pkg.ID
 	user.CurrentProductKind = model.OrderKindTraffic
 	if validityDays > 0 {
-		now := time.Now()
-		base := now
-		if user.ExpireAt != nil && user.ExpireAt.After(now) {
-			base = *user.ExpireAt
-		}
+		base := defaultBase(user)
 		user.ExpireAt = new(base.AddDate(0, 0, validityDays))
 	}
 	return tx.Save(user).Error
 }
 
 // applyResetEffect replenishes the user's plan quota by zeroing the used
-// traffic counters (up_total/down_total) and stamping last_reset_at. It does
-// NOT change quota_bytes, level, or expire_at — a reset package only restarts
-// the usage window so a user who exhausted their plan traffic can continue.
-// Called inside a transaction.
+// traffic counters. It does NOT change quota_bytes, level, or expire_at.
 func applyResetEffect(tx *gorm.DB, user *model.User, plan *model.Plan) error {
 	user.UpTotal = 0
 	user.DownTotal = 0
 	user.LastResetAt = new(time.Now())
 	return tx.Save(user).Error
+}
+
+// daily returns the per-day price (cents/day) for a paid entitlement, guarding
+// against a zero duration.
+func daily(paidCents int64, durationDays int) float64 {
+	if durationDays <= 0 {
+		return 0
+	}
+	return float64(paidCents) / float64(durationDays)
+}
+
+// computeRemainingValue returns the unamortized (remaining) value of the
+// user's current plan entitlement in cents, using time-based proration. It is
+// 0 unless the current product is an active plan with recorded paid/duration.
+func computeRemainingValue(user *model.User) int64 {
+	if user.CurrentProductKind != model.OrderKindPlan ||
+		user.ExpireAt == nil || !user.ExpireAt.After(time.Now()) ||
+		user.CurrentPlanDurationDays <= 0 || user.CurrentPlanPaidCents <= 0 {
+		return 0
+	}
+	total := float64(user.CurrentPlanDurationDays) * 86400
+	rem := user.ExpireAt.Sub(time.Now()).Seconds() / total
+	if rem < 0 {
+		rem = 0
+	}
+	if rem > 1 {
+		rem = 1
+	}
+	return int64(math.Floor(float64(user.CurrentPlanPaidCents) * rem))
+}
+
+// ChangePlan switches the user to a different plan, handling the price
+// difference (差价) per the product rules:
+//   - Same-plan period change (e.g. month→year) or a fresh purchase: immediate,
+//     behaves like a normal renewal (no credit, period stacks on old expiry).
+//   - Cross-plan change (upgrade or downgrade): immediate. The old plan's
+//     remaining value is credited back to the wallet and the new plan's full
+//     price is then charged from the wallet (so a downgrade leaves the surplus
+//     as wallet balance, an upgrade charges the difference); the new period
+//     starts now.
+func (s *OrderService) ChangePlan(userID, planID, planPriceID string) (*ChangePlanResult, error) {
+	var user model.User
+	if err := s.db.First(&user, "id = ?", userID).Error; err != nil {
+		return nil, err
+	}
+	if !user.EmailVerified {
+		return nil, ErrEmailNotVerified
+	}
+	// A user may only have one pending order; resolve it before changing plans.
+	var pending int64
+	s.db.Model(&model.Order{}).
+		Where("user_id = ? AND status = ?", userID, model.OrderStatusPending).
+		Count(&pending)
+	if pending > 0 {
+		return nil, ErrPendingOrderExists
+	}
+
+	plan, err := s.planSvc.Get(planID)
+	if err != nil {
+		return nil, err
+	}
+	allowDisabled := user.CurrentProductID == planID && user.CurrentProductKind == model.OrderKindPlan
+	price, err := s.planSvc.loadPlanPrice(planID, planPriceID, allowDisabled)
+	if err != nil {
+		return nil, err
+	}
+	newPrice := price.Price
+	newDuration := price.DurationDays
+
+	active := user.CurrentProductKind == model.OrderKindPlan &&
+		user.ExpireAt != nil && user.ExpireAt.After(time.Now())
+	crossPlan := active && user.CurrentProductID != planID
+
+	if crossPlan {
+		// Cross-plan change (upgrade OR downgrade): credit the old plan's
+		// remaining value back to the wallet, then charge the new plan's full
+		// price from the wallet, applying the new plan immediately (period
+		// starts now). A downgrade leaves the surplus as wallet balance.
+		return s.applyPlanSwitch(userID, plan, price, newPrice, newDuration)
+	}
+
+	// Immediate, no credit: same-plan period change, fresh purchase, or a
+	// traffic-package current product. Delegate to the normal purchase flow.
+	order, directive, err := s.Create(userID, CreateOrderParams{
+		Kind:        model.OrderKindPlan,
+		PlanID:      planID,
+		PlanPriceID: price.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ChangePlanResult{
+		Order:          order,
+		PayURL:         directive.URL,
+		PayMode:        directive.Kind,
+		Paid:           order.Status == model.OrderStatusPaid,
+		CreditCents:    0,
+		NetChargeCents: newPrice,
+		Immediate:      true,
+	}, nil
+}
+
+// applyPlanSwitch handles a cross-plan change (upgrade OR downgrade): credits
+// the old plan's remaining value back to the wallet, then charges the new
+// plan's full price from the wallet, applying the new plan immediately (period
+// starts now). Because the refund is credited first and the full new price is
+// charged from the boosted wallet, the wallet delta is exactly
+// (remainingValue - newPrice): a surplus (refund) on downgrade, a charge on
+// upgrade. NetChargeCents returned to the client is the informational
+// newPrice - remainingValue (negative on downgrade).
+func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, price *model.PlanPrice, newPrice int64, newDuration int) (*ChangePlanResult, error) {
+	remainingValue := computeRemainingValue(loadUserForProration(s.db, userID))
+	// Net is the economic difference of the switch (new price minus the value
+	// credited back). It may be negative for a downgrade — that means the user
+	// is refunded the difference into their wallet. Net is informational only
+	// (shown to the user, consistent with PreviewChangePlan) and is independent
+	// of any pre-existing wallet balance they also pay with.
+	net := newPrice - remainingValue
+
+	var result *ChangePlanResult
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 1. Credit the old plan's remaining value back to the wallet. This is
+		// the user's own money being returned, not new balance.
+		if remainingValue > 0 {
+			if _, err := s.balanceSvc.Credit(tx, userID, remainingValue,
+				model.BalanceReasonPlanChangeRefund, "", "plan change refund"); err != nil {
+				return err
+			}
+		}
+
+		// 2. Pay the NEW plan's full price from the (now boosted) wallet. We
+		// debit newPrice — not the net difference — so the refund above is not
+		// double-counted: the wallet delta is exactly remainingValue - newPrice
+		// (a refund on downgrade, a charge on upgrade).
+		var u model.User
+		if err := tx.First(&u, "id = ?", userID).Error; err != nil {
+			return err
+		}
+		used := int64(0)
+		if u.BalanceCents > 0 {
+			used = min(u.BalanceCents, newPrice)
+		}
+		if used > 0 {
+			if _, err := s.balanceSvc.Debit(tx, userID, used,
+				model.BalanceReasonPurchase, "", "plan change"); err != nil {
+				return err
+			}
+		}
+
+		order := &model.Order{
+			ID:                  util.NewOrderID(),
+			UserID:              userID,
+			Kind:                model.OrderKindPlan,
+			PlanID:              plan.ID,
+			PlanPriceID:         price.ID,
+			Period:              price.Period,
+			DurationDays:        newDuration,
+			Amount:              newPrice,
+			Status:              model.OrderStatusPending,
+			Platform:            model.OrderPlatformAlipay,
+			OutTradeNo:          util.RandomToken(16),
+			ExpiredAt:           new(time.Now().Add(orderTimeout)),
+			ExtendFromOldExpiry: false,
+		}
+		fullyPaid := used == newPrice
+		if fullyPaid {
+			order.Status = model.OrderStatusPaid
+			order.Platform = model.OrderPlatformBalance
+			paidAt := time.Now()
+			order.PaidAt = &paidAt
+		} else {
+			order.Amount = newPrice - used
+		}
+		if err := tx.Create(order).Error; err != nil {
+			return err
+		}
+		if fullyPaid {
+			if err := applyPlanEffect(tx, &u, plan, newDuration, newPrice, time.Now()); err != nil {
+				return err
+			}
+		}
+		result = &ChangePlanResult{
+			Order:          order,
+			Paid:           fullyPaid,
+			CreditCents:    remainingValue,
+			NetChargeCents: net,
+			Immediate:      true,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if !result.Paid {
+		prov, err := s.payments.Get(result.Order.Platform)
+		if err != nil {
+			return nil, err
+		}
+		subject, err := s.resolvePaymentSubject(model.OrderKindPlan, plan.Name, price.Period, result.Order.Amount, plan.DisplayName)
+		if err != nil {
+			return nil, err
+		}
+		directive, err := prov.PayURL(result.Order, subject)
+		if err != nil {
+			return nil, err
+		}
+		result.PayURL = directive.URL
+		result.PayMode = directive.Kind
+	}
+	return result, nil
+}
+
+// loadUserForProration reads the user inside a transaction-free query for
+// proration math (the caller re-reads inside the tx for mutations).
+func loadUserForProration(db *gorm.DB, userID string) *model.User {
+	var u model.User
+	if err := db.First(&u, "id = ?", userID).Error; err != nil {
+		return &model.User{}
+	}
+	return &u
+}
+
+// PreviewChangePlan computes — without writing anything to the database — the
+// proration numbers the client needs to show the user before they confirm a
+// cross-plan change: the remaining (unamortized) value of the current plan
+// (credited back to the wallet) and the net charge (new price minus that
+// credit). The net may be negative for a downgrade, in which case it means the
+// user will be refunded the difference into their wallet. Immediate is always
+// true because all plan changes now take effect at once.
+func (s *OrderService) PreviewChangePlan(userID, planID, planPriceID string) (*ChangePlanResult, error) {
+	var user model.User
+	if err := s.db.First(&user, "id = ?", userID).Error; err != nil {
+		return nil, err
+	}
+	if !user.EmailVerified {
+		return nil, ErrEmailNotVerified
+	}
+	allowDisabled := user.CurrentProductID == planID && user.CurrentProductKind == model.OrderKindPlan
+	price, err := s.planSvc.loadPlanPrice(planID, planPriceID, allowDisabled)
+	if err != nil {
+		return nil, err
+	}
+	remaining := computeRemainingValue(&user)
+	net := price.Price - remaining
+	return &ChangePlanResult{
+		CreditCents:    remaining,
+		NetChargeCents: net,
+		Immediate:      true,
+	}, nil
 }
 
 // ListMine returns a user's own orders, newest first.
@@ -419,8 +726,7 @@ type OrderListFilter struct {
 	Order  string // asc|desc
 }
 
-// orderSortableColumns whitelists columns for ORDER BY to avoid injecting
-// arbitrary user input into SQL.
+// orderSortableColumns whitelists columns for ORDER BY.
 var orderSortableColumns = map[string]string{
 	"created_at": "created_at",
 	"amount":     "amount",
@@ -430,9 +736,7 @@ var orderSortableColumns = map[string]string{
 	"kind":       "kind",
 }
 
-// List returns all orders (admin), with optional filtering/sorting applied
-// server-side. With an empty filter it preserves the original behavior
-// (newest first).
+// List returns all orders (admin), with optional filtering/sorting.
 func (s *OrderService) List(filter OrderListFilter, page, pageSize int) ([]model.Order, int64, error) {
 	q := s.db.Model(&model.Order{})
 	if filter.Search != "" {
@@ -464,8 +768,7 @@ func (s *OrderService) List(filter OrderListFilter, page, pageSize int) ([]model
 	return orders, total, err
 }
 
-// Get returns an order, enforcing that it belongs to userID (returns not-found
-// for other users' orders).
+// Get returns an order, enforcing that it belongs to userID.
 func (s *OrderService) Get(id, userID string) (*model.Order, error) {
 	var order model.Order
 	if err := s.db.First(&order, "id = ?", id).Error; err != nil {
@@ -486,9 +789,7 @@ func (s *OrderService) AdminGet(id string) (*model.Order, error) {
 	return &order, nil
 }
 
-// CloseMine lets the owner close their own pending order. Returns
-// ErrOrderNotPending if the order is already paid/closed and a not-found error
-// for orders belonging to another user (via Get's ownership check).
+// CloseMine lets the owner close their own pending order.
 func (s *OrderService) CloseMine(id, userID string) error {
 	order, err := s.Get(id, userID)
 	if err != nil {
@@ -502,9 +803,7 @@ func (s *OrderService) CloseMine(id, userID string) error {
 		Update("status", model.OrderStatusClosed).Error
 }
 
-// PayMine regenerates a payment URL for the owner's pending order and returns
-// the order alongside it. Returns ErrOrderNotPending for non-pending orders
-// and a not-found error for orders belonging to another user.
+// PayMine regenerates a payment URL for the owner's pending order.
 func (s *OrderService) PayMine(id, userID string) (*model.Order, *payment.PayDirective, error) {
 	order, err := s.Get(id, userID)
 	if err != nil {
@@ -525,9 +824,6 @@ func (s *OrderService) PayMine(id, userID string) (*model.Order, *payment.PayDir
 			return nil, nil, err
 		}
 	default:
-		// A pending order for an off-shelf plan may still be paid when the
-		// orderer already owns that plan and the plan allows off-shelf
-		// renewal; new purchases of a now disabled plan stay blocked.
 		plan, perr := s.planSvc.Get(order.PlanID)
 		if perr != nil {
 			return nil, nil, perr
@@ -566,8 +862,6 @@ func (s *OrderService) PayMine(id, userID string) (*model.Order, *payment.PayDir
 //   - to "paid":   applies the purchase effect (as a gateway notify would) and
 //     stamps paid_at + a manual trade_no for audit.
 //   - to "closed": cancels the order with no entitlement effect.
-//
-// Paid/closed orders are terminal; re-statusing them returns ErrOrderNotPending.
 func (s *OrderService) AdminUpdateStatus(id, status, adminID string) (*model.Order, error) {
 	now := time.Now()
 	var updated model.Order
@@ -588,7 +882,6 @@ func (s *OrderService) AdminUpdateStatus(id, status, adminID string) (*model.Ord
 			return nil
 		}
 
-		// status == paid: flip pending→paid (idempotent) then grant the effect.
 		res := tx.Model(&model.Order{}).
 			Where("id = ? AND status = ?", id, model.OrderStatusPending).
 			Updates(map[string]any{
@@ -608,35 +901,8 @@ func (s *OrderService) AdminUpdateStatus(id, status, adminID string) (*model.Ord
 		if err := tx.Where("id = ?", id).First(&order).Error; err != nil {
 			return err
 		}
-		var user model.User
-		if err := tx.Where("id = ?", order.UserID).First(&user).Error; err != nil {
+		if err := applyOrderEffect(tx, &order); err != nil {
 			return err
-		}
-		switch order.Kind {
-		case model.OrderKindTraffic:
-			var pkg model.TrafficPackage
-			if err := tx.Where("id = ?", order.TrafficPackageID).First(&pkg).Error; err != nil {
-				return err
-			}
-			if err := applyTrafficEffect(tx, &user, &pkg, order.ValidityDays); err != nil {
-				return err
-			}
-		case model.OrderKindReset:
-			var plan model.Plan
-			if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
-				return err
-			}
-			if err := applyResetEffect(tx, &user, &plan); err != nil {
-				return err
-			}
-		default: // plan
-			var plan model.Plan
-			if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
-				return err
-			}
-			if err := applyPlanEffect(tx, &user, &plan, order.DurationDays); err != nil {
-				return err
-			}
 		}
 		updated.Status = model.OrderStatusPaid
 		updated.TradeNo = "manual:" + adminID
@@ -647,7 +913,6 @@ func (s *OrderService) AdminUpdateStatus(id, status, adminID string) (*model.Ord
 	if err != nil {
 		return nil, err
 	}
-	// Best-effort admin alert once the manual payment is applied.
 	s.alertOrderPaid(&updated)
 	return &updated, nil
 }

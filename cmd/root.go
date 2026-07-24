@@ -83,6 +83,7 @@ func run(cmd *cobra.Command) {
 		&model.PlanPrice{},
 		&model.TrafficPackage{},
 		&model.Order{},
+		&model.BalanceTransaction{},
 		&model.Ticket{},
 		&model.TicketMessage{},
 		&model.TicketReadState{},
@@ -155,7 +156,8 @@ func run(cmd *cobra.Command) {
 	alipay.Register(payments)
 	wechat.Register(payments)
 	stripe.Register(payments)
-	orderSvc := service.NewOrderService(db, sysCfg, payments)
+	balanceSvc := service.NewBalanceService(db)
+	orderSvc := service.NewOrderService(db, sysCfg, payments, balanceSvc)
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()

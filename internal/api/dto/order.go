@@ -25,6 +25,29 @@ type CreateOrderResponse struct {
 	Order   *model.Order `json:"order"`
 	PayURL  string       `json:"pay_url"`
 	PayMode string       `json:"pay_mode"` // "redirect" | "qr" — how to present PayURL to the user
+	Paid    bool         `json:"paid"`     // true when fully covered by the wallet (no gateway step)
+}
+
+// ChangePlanRequest is the body for POST /user/change-plan.
+type ChangePlanRequest struct {
+	PlanID      string `json:"plan_id" binding:"required"`
+	PlanPriceID string `json:"plan_price_id" binding:"required"`
+}
+
+// BalanceResponse is the body for GET /user/balance (and the admin variant):
+// the current wallet balance plus paginated ledger history.
+type BalanceResponse struct {
+	BalanceCents int64                      `json:"balance_cents"`
+	Ledger       []model.BalanceTransaction `json:"ledger"`
+	Total        int64                      `json:"total"`
+	Page         int                        `json:"page"`
+	PageSize     int                        `json:"page_size"`
+}
+
+// AdminAdjustBalanceRequest is the body for POST /admin/users/:id/balance.
+type AdminAdjustBalanceRequest struct {
+	DeltaCents int64  `json:"delta_cents" binding:"required"` // positive = grant, negative = deduct
+	Remark     string `json:"remark"`
 }
 
 // UpdateOrderStatusRequest is the admin manual status-change body. Only

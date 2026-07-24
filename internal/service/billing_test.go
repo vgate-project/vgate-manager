@@ -40,7 +40,7 @@ func TestApplyPlanEffectSetsLevel(t *testing.T) {
 		if err := tx.Where("id = ?", "u1").First(&u).Error; err != nil {
 			return err
 		}
-		return applyPlanEffect(tx, &u, &plan, 30)
+		return applyPlanEffect(tx, &u, &plan, 30, 0, defaultBase(&u))
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestApplyPlanEffectReplacesNotAdds(t *testing.T) {
 		if err := tx.Where("id = ?", "u1").First(&u).Error; err != nil {
 			return err
 		}
-		return applyPlanEffect(tx, &u, &plan, 30)
+		return applyPlanEffect(tx, &u, &plan, 30, 0, defaultBase(&u))
 	})
 	if err != nil {
 		t.Fatal(err)

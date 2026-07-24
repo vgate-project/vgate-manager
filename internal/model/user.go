@@ -42,6 +42,18 @@ type User struct {
 	ExpireAt          *time.Time `gorm:"index" json:"expire_at,omitempty"`
 	QuotaBytes        int64      `gorm:"default:0" json:"quota_bytes"`             // traffic cap in bytes: -1 = unlimited, 0 = no quota (blocked), >0 = capped
 	QuotaResetEnabled bool       `gorm:"default:false" json:"quota_reset_enabled"` // participates in global monthly reset (reset day from system_config)
+	// BalanceCents is the user's spendable account-balance wallet (cents). It
+	// can pay for any purchase (plans, traffic packages, resets) and is credited
+	// when a plan change refunds the remaining value of the old plan.
+	BalanceCents int64 `gorm:"default:0" json:"balance_cents"`
+	// CurrentPlanPaidCents / CurrentPlanDurationDays record what the user paid
+	// for the CURRENT plan entitlement (gross cents + the duration of that
+	// purchase). They enable per-day amortization so a mid-period plan change
+	// can credit the old plan's remaining value. Only meaningful when
+	// CurrentProductKind == "plan". Exposed so the change-plan dialog can
+	// preview the credit client-side.
+	CurrentPlanPaidCents    int64 `gorm:"default:0" json:"current_plan_paid_cents"`
+	CurrentPlanDurationDays int   `gorm:"default:0" json:"current_plan_duration_days"`
 	// SpeedLimitUpBps / SpeedLimitDownBps cap this user's upload / download
 	// throughput in bytes/sec (0 = unlimited). Enforced by the node; the
 	// effective rate is min(node global limit, this per-user limit).

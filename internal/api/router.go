@@ -76,9 +76,10 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	alipay.Register(payments)
 	wechat.Register(payments)
 	stripe.Register(payments)
-	orderSvc := service.NewOrderService(db, sysCfg, payments)
+	balanceSvc := service.NewBalanceService(db)
+	orderSvc := service.NewOrderService(db, sysCfg, payments, balanceSvc)
 	planH := handler.NewPlanHandler(planSvc)
-	orderH := handler.NewOrderHandler(orderSvc)
+	orderH := handler.NewOrderHandler(orderSvc, balanceSvc)
 	trafficPkgSvc := service.NewTrafficPackageService(db)
 	trafficPkgH := handler.NewTrafficPackageHandler(trafficPkgSvc)
 
@@ -168,6 +169,13 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		userProtected.GET("/orders/:id", orderH.GetMine)
 		userProtected.POST("/orders/:id/pay", orderH.PayMine)
 		userProtected.POST("/orders/:id/close", orderH.CloseMine)
+
+		// Plan change with proration + wallet: the old plan's remaining value
+		// is credited to the wallet and the net difference is charged (or
+		// refunded); all changes apply immediately.
+		userProtected.POST("/change-plan", orderH.ChangePlan)
+		userProtected.GET("/change-plan/preview", orderH.ChangePlanPreview)
+		userProtected.GET("/balance", orderH.GetBalance)
 
 		userProtected.GET("/traffic", userTrafficH.List)
 		userProtected.GET("/traffic/hourly", userTrafficH.Hourly)
@@ -315,6 +323,10 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		adminAuth.GET("/orders", orderH.List)
 		adminAuth.GET("/orders/:id", orderH.Get)
 		adminAuth.PUT("/orders/:id/status", orderH.AdminUpdateStatus)
+
+		// Wallet (account balance) admin surface.
+		adminAuth.GET("/users/:id/balance", orderH.AdminGetBalance)
+		adminAuth.POST("/users/:id/balance", orderH.AdminAdjustBalance)
 
 		// Products (plans + traffic packages): any admin may view, but only
 		// super admins may create/update/delete (see superAuth group below).

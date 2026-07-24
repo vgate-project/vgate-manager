@@ -11,11 +11,12 @@ import (
 )
 
 type OrderHandler struct {
-	svc *service.OrderService
+	svc        *service.OrderService
+	balanceSvc *service.BalanceService
 }
 
-func NewOrderHandler(svc *service.OrderService) *OrderHandler {
-	return &OrderHandler{svc: svc}
+func NewOrderHandler(svc *service.OrderService, balanceSvc *service.BalanceService) *OrderHandler {
+	return &OrderHandler{svc: svc, balanceSvc: balanceSvc}
 }
 
 // Create places an order for the authenticated user and returns a PayDirective
@@ -32,7 +33,7 @@ func (h *OrderHandler) Create(c *gin.Context) {
 	if writeErr(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind})
+	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind, Paid: order.Status == model.OrderStatusPaid})
 }
 
 // ListMine lists the authenticated user's own orders.
@@ -60,7 +61,7 @@ func (h *OrderHandler) PayMine(c *gin.Context) {
 	if writeErr(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind})
+	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind, Paid: order.Status == model.OrderStatusPaid})
 }
 
 // CloseMine lets the caller close their own pending order.
@@ -89,7 +90,7 @@ func (h *OrderHandler) AdminCreate(c *gin.Context) {
 	if writeErr(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind})
+	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind, Paid: order.Status == model.OrderStatusPaid})
 }
 
 // List lists all orders (admin), with optional filtering/sorting applied
@@ -153,4 +154,98 @@ func toOrderParams(c *gin.Context, req dto.CreateOrderRequest) service.CreateOrd
 		TrafficPackageID: req.TrafficPackageID,
 		Platform:         req.Platform,
 	}
+}
+
+// ChangePlan serves POST /api/v1/user/change-plan — switch the caller to a
+// different plan, crediting the old plan's remaining value to the wallet and
+// charging (or refunding) the net difference. All changes take effect
+// immediately.
+func (h *OrderHandler) ChangePlan(c *gin.Context) {
+	userID := c.GetString("user_id")
+	var req dto.ChangePlanRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	res, err := h.svc.ChangePlan(userID, req.PlanID, req.PlanPriceID)
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// ChangePlanPreview serves GET /api/v1/user/change-plan/preview — compute the
+// proration numbers (remaining credit + net charge) for a prospective plan
+// change without mutating anything. Query params: plan_id, plan_price_id.
+func (h *OrderHandler) ChangePlanPreview(c *gin.Context) {
+	userID := c.GetString("user_id")
+	planID := c.Query("plan_id")
+	planPriceID := c.Query("plan_price_id")
+	if planID == "" || planPriceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "plan_id and plan_price_id are required"})
+		return
+	}
+	res, err := h.svc.PreviewChangePlan(userID, planID, planPriceID)
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// GetBalance serves GET /api/v1/user/balance — the caller's wallet balance and
+// ledger history.
+func (h *OrderHandler) GetBalance(c *gin.Context) {
+	userID := c.GetString("user_id")
+	page, pageSize := ParsePaging(c)
+	balance, err := h.balanceSvc.GetBalance(userID)
+	if writeErr(c, err) {
+		return
+	}
+	ledger, total, err := h.balanceSvc.ListLedger(userID, page, pageSize)
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, dto.BalanceResponse{
+		BalanceCents: balance,
+		Ledger:       ledger,
+		Total:        total,
+		Page:         page,
+		PageSize:     pageSize,
+	})
+}
+
+// AdminGetBalance serves GET /api/v1/admin/users/:id/balance.
+func (h *OrderHandler) AdminGetBalance(c *gin.Context) {
+	id := c.Param("id")
+	page, pageSize := ParsePaging(c)
+	balance, err := h.balanceSvc.GetBalance(id)
+	if writeErr(c, err) {
+		return
+	}
+	ledger, total, err := h.balanceSvc.ListLedger(id, page, pageSize)
+	if writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, dto.BalanceResponse{
+		BalanceCents: balance,
+		Ledger:       ledger,
+		Total:        total,
+		Page:         page,
+		PageSize:     pageSize,
+	})
+}
+
+// AdminAdjustBalance serves POST /api/v1/admin/users/:id/balance — grant or
+// deduct from a user's wallet.
+func (h *OrderHandler) AdminAdjustBalance(c *gin.Context) {
+	id := c.Param("id")
+	var req dto.AdminAdjustBalanceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.balanceSvc.AdminAdjust(id, req.DeltaCents, req.Remark); writeErr(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
