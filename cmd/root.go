@@ -82,6 +82,7 @@ func run(cmd *cobra.Command) {
 		&model.Plan{},
 		&model.PlanPrice{},
 		&model.TrafficPackage{},
+		&model.TrafficGrant{},
 		&model.Order{},
 		&model.BalanceTransaction{},
 		&model.Ticket{},
@@ -196,6 +197,27 @@ func run(cmd *cobra.Command) {
 		defer ticker.Stop()
 		for range ticker.C {
 			runQuotaReset(userSvc, sysCfg)
+		}
+	}()
+
+	// Hourly reclaim of expired traffic-package grants: when a package's own
+	// validity lapses we subtract its bonus from the user's traffic_quota_bytes.
+	// Runs independently of the monthly quota reset (which only fires on the
+	// configured reset day).
+	go func() {
+		if n, err := userSvc.ReclaimExpiredTrafficGrants(); err != nil {
+			log.Errorf("reclaiming expired traffic grants: %v", err)
+		} else if n > 0 {
+			log.Infof("reclaimed %d expired traffic grants", n)
+		}
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if n, err := userSvc.ReclaimExpiredTrafficGrants(); err != nil {
+				log.Errorf("reclaiming expired traffic grants: %v", err)
+			} else if n > 0 {
+				log.Infof("reclaimed %d expired traffic grants", n)
+			}
 		}
 	}()
 

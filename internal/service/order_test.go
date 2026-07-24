@@ -17,7 +17,7 @@ func orderTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&model.SystemConfig{}, &model.User{}, &model.Plan{}, &model.PlanPrice{},
-		&model.TrafficPackage{}, &model.Order{},
+		&model.TrafficPackage{}, &model.Order{}, &model.TrafficGrant{},
 		&model.BalanceTransaction{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)

@@ -56,6 +56,18 @@ func Register(r *payment.Registry) {
 // Platform implements payment.Provider.
 func (p *Provider) Platform() string { return Platform }
 
+// Mode implements payment.Provider. Alipay uses an offline QR pre-creation.
+func (p *Provider) Mode() string { return payment.ModeQR }
+
+// IsConfigured implements payment.ConfigStatusProvider.
+func (p *Provider) IsConfigured() bool {
+	cfg, err := p.loadConfig()
+	if err != nil {
+		return false
+	}
+	return cfg.AppID != "" && cfg.PrivateKey != "" && cfg.PublicKey != "" && cfg.NotifyURL != ""
+}
+
 func (p *Provider) loadConfig() (Config, error) {
 	m, err := p.getConfig()
 	if err != nil {

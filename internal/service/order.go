@@ -84,6 +84,20 @@ func NewOrderService(db *gorm.DB, sys *SystemConfigService, payments *payment.Re
 	}
 }
 
+// DB exposes the underlying handle so handlers can perform ownership checks
+// before delegating to service methods.
+func (s *OrderService) DB() *gorm.DB { return s.db }
+
+// Payments exposes the provider registry so handlers can reach a provider for
+// channel-specific verification (e.g. Apple IAP transaction validation).
+func (s *OrderService) Payments() *payment.Registry { return s.payments }
+
+// MarkApplePaid marks an Apple IAP order paid, recording the App Store
+// original transaction id as the gateway trade number.
+func (s *OrderService) MarkApplePaid(outTradeNo, tradeNo string) error {
+	return s.markPaid(outTradeNo, tradeNo, model.OrderPlatformApple)
+}
+
 // SetTelegramService wires the Telegram bot service so a paid order can emit
 // an admin alert (when the admin enabled the order_paid alert).
 func (s *OrderService) SetTelegramService(svc *TelegramService) {
@@ -156,7 +170,17 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 
 	platform := p.Platform
 	if platform == "" {
-		platform = model.OrderPlatformAlipay
+		// No explicit choice: pick the first admin-enabled, configured
+		// channel (falls back to alipay for backward compatibility).
+		platform = s.payments.DefaultPlatform()
+	} else {
+		available, err := s.payments.IsAvailable(platform)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !available {
+			return nil, nil, fmt.Errorf("payment platform %q is not available", platform)
+		}
 	}
 
 	// Build the order with its gross amount before any wallet deduction.
@@ -322,6 +346,12 @@ func (s *OrderService) Reconcile(ctx context.Context, platform string, r *http.R
 	return nil
 }
 
+// ListPaymentMethods returns every registered payment platform with its
+// availability, for the user-facing payment-method picker.
+func (s *OrderService) ListPaymentMethods() []payment.ChannelInfo {
+	return s.payments.List()
+}
+
 // markPaid flips the pending order identified by outTradeNo to paid
 // (idempotently) and applies its purchase effect inside a single transaction.
 func (s *OrderService) markPaid(outTradeNo, tradeNo, platform string) error {
@@ -434,18 +464,38 @@ func applyPlanEffect(tx *gorm.DB, user *model.User, plan *model.Plan, durationDa
 	}).Error
 }
 
-// applyTrafficEffect adds the package's quota. When validityDays > 0 it also
-// extends the user's ExpireAt so the traffic is usable for that window.
+// applyTrafficEffect adds the package's quota as a tracked bonus (so it can be
+// reclaimed on expiry) rather than merging it into the user's base quota_bytes.
+// When validityDays > 0 it also extends the user's ExpireAt so the traffic is
+// usable for that window; the same instant becomes the grant's own expiry so
+// the reclaim job can recover the bonus when it lapses. validityDays == 0 means
+// the package has no independent expiry (it lives until the user's own
+// expire_at gates access) and the grant is permanent.
 func applyTrafficEffect(tx *gorm.DB, user *model.User, pkg *model.TrafficPackage, validityDays int) error {
-	user.QuotaBytes += pkg.QuotaBytes
+	user.TrafficQuotaBytes += pkg.QuotaBytes
 	user.QuotaResetEnabled = false
 	user.CurrentProductID = pkg.ID
 	user.CurrentProductKind = model.OrderKindTraffic
+	var grantExpire *time.Time
 	if validityDays > 0 {
 		base := defaultBase(user)
-		user.ExpireAt = new(base.AddDate(0, 0, validityDays))
+		exp := base.AddDate(0, 0, validityDays)
+		user.ExpireAt = &exp
+		grantExpire = &exp
 	}
-	return tx.Save(user).Error
+	if err := tx.Save(user).Error; err != nil {
+		return err
+	}
+	grant := &model.TrafficGrant{
+		ID:         util.NewNodeID(),
+		UserID:     user.ID,
+		Source:     model.GrantSourceTrafficPackage,
+		SourceID:   pkg.ID,
+		QuotaBytes: pkg.QuotaBytes,
+		GrantedAt:  time.Now(),
+		ExpireAt:   grantExpire,
+	}
+	return tx.Create(grant).Error
 }
 
 // applyResetEffect replenishes the user's plan quota by zeroing the used
@@ -495,7 +545,7 @@ func computeRemainingValue(user *model.User) int64 {
 //     price is then charged from the wallet (so a downgrade leaves the surplus
 //     as wallet balance, an upgrade charges the difference); the new period
 //     starts now.
-func (s *OrderService) ChangePlan(userID, planID, planPriceID string) (*ChangePlanResult, error) {
+func (s *OrderService) ChangePlan(userID, planID, planPriceID, platform string) (*ChangePlanResult, error) {
 	var user model.User
 	if err := s.db.First(&user, "id = ?", userID).Error; err != nil {
 		return nil, err
@@ -533,7 +583,7 @@ func (s *OrderService) ChangePlan(userID, planID, planPriceID string) (*ChangePl
 		// remaining value back to the wallet, then charge the new plan's full
 		// price from the wallet, applying the new plan immediately (period
 		// starts now). A downgrade leaves the surplus as wallet balance.
-		return s.applyPlanSwitch(userID, plan, price, newPrice, newDuration)
+		return s.applyPlanSwitch(userID, plan, price, newPrice, newDuration, platform)
 	}
 
 	// Immediate, no credit: same-plan period change, fresh purchase, or a
@@ -542,6 +592,7 @@ func (s *OrderService) ChangePlan(userID, planID, planPriceID string) (*ChangePl
 		Kind:        model.OrderKindPlan,
 		PlanID:      planID,
 		PlanPriceID: price.ID,
+		Platform:    platform,
 	})
 	if err != nil {
 		return nil, err
@@ -565,7 +616,10 @@ func (s *OrderService) ChangePlan(userID, planID, planPriceID string) (*ChangePl
 // (remainingValue - newPrice): a surplus (refund) on downgrade, a charge on
 // upgrade. NetChargeCents returned to the client is the informational
 // newPrice - remainingValue (negative on downgrade).
-func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, price *model.PlanPrice, newPrice int64, newDuration int) (*ChangePlanResult, error) {
+func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, price *model.PlanPrice, newPrice int64, newDuration int, platform string) (*ChangePlanResult, error) {
+	if platform == "" {
+		platform = s.payments.DefaultPlatform()
+	}
 	remainingValue := computeRemainingValue(loadUserForProration(s.db, userID))
 	// Net is the economic difference of the switch (new price minus the value
 	// credited back). It may be negative for a downgrade — that means the user
@@ -614,7 +668,7 @@ func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, price *m
 			DurationDays:        newDuration,
 			Amount:              newPrice,
 			Status:              model.OrderStatusPending,
-			Platform:            model.OrderPlatformAlipay,
+			Platform:            platform,
 			OutTradeNo:          util.RandomToken(16),
 			ExpiredAt:           new(time.Now().Add(orderTimeout)),
 			ExtendFromOldExpiry: false,

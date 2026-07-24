@@ -84,7 +84,7 @@ func (s *ServerService) FetchUsers(nodeID string) ([]wire.User, error) {
 		Where("users.enabled = ?", true).
 		Where("users.email_verified = ?", true).
 		Where("users.expire_at IS NULL OR users.expire_at > ?", now).
-		Where("users.quota_bytes = -1 OR (users.up_total + users.down_total) < users.quota_bytes").
+		Where("users.quota_bytes = -1 OR (users.up_total + users.down_total) < (users.quota_bytes + COALESCE(users.traffic_quota_bytes, 0))").
 		Find(&users).Error
 	if err != nil {
 		return nil, err

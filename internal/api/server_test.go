@@ -31,7 +31,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&model.UserNode{}, &model.UserNodeTraffic{}, &model.TrafficHourlyStat{},
 		&model.RefreshToken{}, &model.SystemConfig{},
 		&model.InviteCode{}, &model.EmailVerification{}, &model.Announcement{},
-		&model.TrafficPackage{}, &model.Order{},
+		&model.TrafficPackage{}, &model.Order{}, &model.TrafficGrant{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -190,6 +190,43 @@ func TestServerUsers(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &users)
 	if len(users) != 0 {
 		t.Errorf("expired user should be excluded, got %d users", len(users))
+	}
+}
+
+func TestServerUsersTrafficBonus(t *testing.T) {
+	db := setupTestDB(t)
+	seedNodeUser(t, db)
+	r := newRouter(db)
+
+	// Base quota 100, used 90, plus a 50 traffic bonus → effective cap 150.
+	// Used (90) is still under the effective cap, so the user must be served.
+	db.Model(&model.User{}).Where("id = ?", testUserID).Updates(map[string]any{
+		"quota_bytes":         100,
+		"traffic_quota_bytes": 50,
+		"up_total":            90,
+		"down_total":          0,
+	})
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/server/users?node_id="+testNodeID+"&token="+testToken, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	var users []wire.User
+	json.Unmarshal(w.Body.Bytes(), &users)
+	if len(users) != 1 {
+		t.Fatalf("bonus user under effective cap should be fetched, got %d", len(users))
+	}
+
+	// Push used past the effective cap (base 100 + bonus 50 = 150).
+	db.Model(&model.User{}).Where("id = ?", testUserID).Updates(map[string]any{
+		"up_total":   160,
+		"down_total": 0,
+	})
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/server/users?node_id="+testNodeID+"&token="+testToken, nil))
+	json.Unmarshal(w.Body.Bytes(), &users)
+	if len(users) != 0 {
+		t.Errorf("user over effective cap (base+bonus) should be excluded, got %d", len(users))
 	}
 }
 

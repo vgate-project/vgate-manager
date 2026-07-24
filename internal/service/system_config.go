@@ -256,6 +256,31 @@ func (s *SystemConfigService) GetAlipayConfig() (AlipayConfig, error) {
 	}, nil
 }
 
+// PayPal config SystemConfig keys.
+const (
+	PaypalKeyClientID   = "paypal.client_id"
+	PaypalKeySecret     = "paypal.secret"
+	PaypalKeyNotifyURL  = "paypal.notify_url"
+	PaypalKeyWebhookID  = "paypal.webhook_id"
+	PaypalKeySuccessURL = "paypal.success_url"
+	PaypalKeyCancelURL  = "paypal.cancel_url"
+	PaypalKeySandbox    = "paypal.sandbox"  // "true" | "false"
+	PaypalKeyCurrency   = "paypal.currency" // ISO currency, defaults to "usd"
+)
+
+// Apple (App Store IAP) config SystemConfig keys.
+const (
+	AppleKeyIssuerID    = "apple.issuer_id"
+	AppleKeyKeyID       = "apple.key_id"
+	AppleKeyBundleID    = "apple.bundle_id"
+	AppleKeyPrivateKey  = "apple.private_key" // contents of the .p8 auth key
+	AppleKeyEnvironment = "apple.environment" // "sandbox" | "prod" (default sandbox)
+	AppleKeyNotifyURL   = "apple.notify_url"
+	// AppleKeyProductMap maps an Apple product id to a vgate plan_price id so a
+	// verified transaction can be matched to the bought plan price.
+	AppleKeyProductMap = "apple.product_map" // JSON: {"<apple_product_id>":"<plan_price_id>"}
+)
+
 // PasswordPolicy describes the strength rules enforced when a password is set
 // or changed (admin and user self-service). Values are sourced from
 // SystemConfig so an admin can tune them at runtime without a restart.

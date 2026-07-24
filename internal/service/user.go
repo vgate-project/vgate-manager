@@ -400,6 +400,46 @@ func (s *UserService) ResetDueQuotas() (int64, error) {
 	return res.RowsAffected, res.Error
 }
 
+// ReclaimExpiredTrafficGrants recovers the bonus quota granted by traffic
+// packages whose own expiry has passed. Each grant records the bytes it added
+// to a user's traffic_quota_bytes; when the grant's ExpireAt is in the past we
+// subtract that amount (floored at 0) and mark the grant reclaimed so it is not
+// processed twice. Permanent grants (nil ExpireAt — e.g. validity_days = 0
+// packages or redeemed traffic codes) are skipped. Returns the number of grants
+// reclaimed.
+func (s *UserService) ReclaimExpiredTrafficGrants() (int64, error) {
+	now := time.Now()
+	var grants []model.TrafficGrant
+	if err := s.db.
+		Where("reclaimed = ? AND expire_at IS NOT NULL AND expire_at <= ?", false, now).
+		Find(&grants).Error; err != nil {
+		return 0, err
+	}
+	var reclaimed int64
+	for _, g := range grants {
+		err := s.db.Transaction(func(tx *gorm.DB) error {
+			// Floor at 0 with a portable CASE (GREATEST is not available in
+			// every SQLite build and is avoided for portability).
+			if err := tx.Model(&model.User{}).
+				Where("id = ?", g.UserID).
+				Update("traffic_quota_bytes", gorm.Expr(
+					"CASE WHEN traffic_quota_bytes >= ? THEN traffic_quota_bytes - ? ELSE 0 END",
+					g.QuotaBytes, g.QuotaBytes)).
+				Error; err != nil {
+				return err
+			}
+			return tx.Model(&model.TrafficGrant{}).
+				Where("id = ?", g.ID).
+				Update("reclaimed", true).Error
+		})
+		if err != nil {
+			return reclaimed, err
+		}
+		reclaimed++
+	}
+	return reclaimed, nil
+}
+
 // ListNodesForUser returns the nodes a user can use: nodes at or below the
 // user's level by default (the level tier), plus any node the admin explicitly
 // granted via a user_nodes.override row despite a higher level. No assignment

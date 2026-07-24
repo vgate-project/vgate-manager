@@ -40,7 +40,8 @@ type User struct {
 	SubToken          string     `gorm:"uniqueIndex;size:32;not null" json:"sub_token"` // crypto-random share-URL credential
 	Level             int        `gorm:"default:0" json:"level"`
 	ExpireAt          *time.Time `gorm:"index" json:"expire_at,omitempty"`
-	QuotaBytes        int64      `gorm:"default:0" json:"quota_bytes"`             // traffic cap in bytes: -1 = unlimited, 0 = no quota (blocked), >0 = capped
+	QuotaBytes        int64      `gorm:"default:0" json:"quota_bytes"`             // base traffic cap in bytes: -1 = unlimited, 0 = no quota (blocked), >0 = capped. Set by plans; traffic-package/redemption bonuses live in TrafficQuotaBytes.
+	TrafficQuotaBytes int64      `gorm:"default:0" json:"traffic_quota_bytes"`     // sum of active (non-expired) traffic-package / redemption bonuses, reclaimed on expiry
 	QuotaResetEnabled bool       `gorm:"default:false" json:"quota_reset_enabled"` // participates in global monthly reset (reset day from system_config)
 	// BalanceCents is the user's spendable account-balance wallet (cents). It
 	// can pay for any purchase (plans, traffic packages, resets) and is credited
@@ -94,4 +95,15 @@ type User struct {
 	LastTrafficReminderAt *time.Time `json:"last_traffic_reminder_at,omitempty"`
 	CreatedAt             time.Time  `json:"created_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
+}
+
+// EffectiveQuotaBytes returns the user's total traffic cap, combining the base
+// plan quota (QuotaBytes, with -1 = unlimited) and any active traffic-package /
+// redemption bonuses (TrafficQuotaBytes). A base of -1 stays unlimited
+// regardless of bonuses; otherwise the two are summed.
+func (u User) EffectiveQuotaBytes() int64 {
+	if u.QuotaBytes < 0 {
+		return -1
+	}
+	return u.QuotaBytes + u.TrafficQuotaBytes
 }

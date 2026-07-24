@@ -145,6 +145,81 @@ func (h *OrderHandler) Notify(c *gin.Context) {
 	c.String(http.StatusOK, "success")
 }
 
+// PaymentMethods lists the admin-enabled, configured payment channels so the
+// user portal can render a payment-method picker.
+func (h *OrderHandler) PaymentMethods(c *gin.Context) {
+	c.JSON(http.StatusOK, h.svc.ListPaymentMethods())
+}
+
+// AdminPaymentMethods is the admin counterpart of PaymentMethods.
+func (h *OrderHandler) AdminPaymentMethods(c *gin.Context) {
+	c.JSON(http.StatusOK, h.svc.ListPaymentMethods())
+}
+
+// appleVerifier is the subset of the apple provider used to verify an App Store
+// transaction JWS. Declared locally to avoid a hard import of the concrete
+// provider package.
+type appleVerifier interface {
+	VerifyTransaction(jws string) (originalTxnID, productID string, ok bool, err error)
+}
+
+// AppleVerify completes an Apple IAP purchase: the native app posts the signed
+// transaction JWS it received from StoreKit; the backend verifies the signature
+// and, on success, marks the order paid and grants entitlement.
+func (h *OrderHandler) AppleVerify(c *gin.Context) {
+	userID := c.GetString("user_id")
+	orderID := c.Param("id")
+
+	var req dto.AppleVerifyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Load and ownership-check the order before touching any provider.
+	var order model.Order
+	if err := h.svc.DB().Where("id = ? AND user_id = ?", orderID, userID).First(&order).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+		return
+	}
+	if order.Platform != model.OrderPlatformApple {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order is not an Apple IAP order"})
+		return
+	}
+	if order.Status != model.OrderStatusPending {
+		c.JSON(http.StatusConflict, gin.H{"error": "order is not pending", "status": order.Status})
+		return
+	}
+
+	prov, err := h.svc.Payments().Get(model.OrderPlatformApple)
+	if err != nil {
+		writeErr(c, err)
+		return
+	}
+	av, ok := prov.(appleVerifier)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "apple provider does not support verification"})
+		return
+	}
+	originalTxnID, _, verified, err := av.VerifyTransaction(req.Transaction)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to verify apple transaction: " + err.Error()})
+		return
+	}
+	if !verified || originalTxnID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "apple transaction is invalid"})
+		return
+	}
+
+	if err := h.svc.MarkApplePaid(order.OutTradeNo, originalTxnID); err != nil {
+		writeErr(c, err)
+		return
+	}
+	var updated model.Order
+	_ = h.svc.DB().Where("id = ?", orderID).First(&updated).Error
+	c.JSON(http.StatusOK, gin.H{"ok": true, "order": updated})
+}
+
 // toOrderParams maps a DTO request into the service's param struct.
 func toOrderParams(c *gin.Context, req dto.CreateOrderRequest) service.CreateOrderParams {
 	return service.CreateOrderParams{
@@ -167,7 +242,7 @@ func (h *OrderHandler) ChangePlan(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	res, err := h.svc.ChangePlan(userID, req.PlanID, req.PlanPriceID)
+	res, err := h.svc.ChangePlan(userID, req.PlanID, req.PlanPriceID, req.Platform)
 	if writeErr(c, err) {
 		return
 	}

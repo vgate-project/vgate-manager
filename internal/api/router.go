@@ -14,6 +14,8 @@ import (
 	"github.com/vgate-project/vgate-manager/internal/middleware"
 	"github.com/vgate-project/vgate-manager/internal/payment"
 	"github.com/vgate-project/vgate-manager/internal/payment/alipay"
+	"github.com/vgate-project/vgate-manager/internal/payment/apple"
+	"github.com/vgate-project/vgate-manager/internal/payment/paypal"
 	"github.com/vgate-project/vgate-manager/internal/payment/stripe"
 	"github.com/vgate-project/vgate-manager/internal/payment/wechat"
 	"github.com/vgate-project/vgate-manager/internal/service"
@@ -76,6 +78,8 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	alipay.Register(payments)
 	wechat.Register(payments)
 	stripe.Register(payments)
+	paypal.Register(payments)
+	apple.Register(payments)
 	balanceSvc := service.NewBalanceService(db)
 	orderSvc := service.NewOrderService(db, sysCfg, payments, balanceSvc)
 	planH := handler.NewPlanHandler(planSvc)
@@ -139,6 +143,9 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	userRedemptionH := handler.NewUserRedemptionHandler(redemptionSvc)
 	userAnnH := handler.NewUserAnnouncementHandler(annSvc)
 
+	// Dashboard summary: one call bundling the user home page + global badges.
+	userDashboardH := handler.NewUserDashboardHandler(userSvc, trafficSvc, orderSvc, annSvc, ticketSvc, telegramSvc)
+
 	// Public payment-gateway async-notification endpoints (unauthenticated,
 	// like /sub). The platform is the URL segment, e.g. /api/v1/billing/alipay/notify.
 	r.POST("/api/v1/billing/:platform/notify", orderH.Notify)
@@ -154,6 +161,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 	userProtected := r.Group("/api/v1/user")
 	userProtected.Use(middleware.RequireUser(authSvc))
 	{
+		userProtected.GET("/dashboard", userDashboardH.Dashboard)
 		userProtected.GET("/profile", userH.Profile)
 		userProtected.PUT("/profile", userH.UpdateProfile)
 		userProtected.GET("/subscribe", userH.Subscribe)
@@ -169,6 +177,12 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		userProtected.GET("/orders/:id", orderH.GetMine)
 		userProtected.POST("/orders/:id/pay", orderH.PayMine)
 		userProtected.POST("/orders/:id/close", orderH.CloseMine)
+		// Apple IAP completion: the native app posts the signed transaction
+		// JWS after a purchase; the backend verifies and grants entitlement.
+		userProtected.POST("/orders/:id/apple-verify", orderH.AppleVerify)
+
+		// List the admin-enabled, configured payment channels for the picker.
+		userProtected.GET("/payment-methods", orderH.PaymentMethods)
 
 		// Plan change with proration + wallet: the old plan's remaining value
 		// is credited to the wallet and the net difference is charged (or
@@ -260,6 +274,10 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		adminAuth.DELETE("/nodes/:id", adminNodeH.Delete)
 		adminAuth.POST("/nodes/:id/regenerate-token", adminNodeH.RegenerateToken)
 		adminAuth.GET("/nodes/:id/users", adminUserH.ListUsersForNode)
+
+		// Static lookup lists reused across many views/dialogs, cached app-wide.
+		adminRefH := handler.NewAdminReferenceHandler(userSvc, nodeSvc, planSvc, trafficPkgSvc, orderSvc)
+		adminAuth.GET("/reference", adminRefH.Reference)
 
 		adminAuth.GET("/users", adminUserH.List)
 		adminAuth.POST("/users", adminUserH.Create)
@@ -355,6 +373,9 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		// System config is super-admin only.
 		superAuth.GET("/system-config", systemH.Get)
 		superAuth.PUT("/system-config", systemH.Update)
+
+		// Payment channels (admin view of enabled/configured methods).
+		superAuth.GET("/payment-methods", orderH.AdminPaymentMethods)
 
 		// Zombie-user cleanup is super-admin only (bulk destructive action).
 		superAuth.POST("/users/zombies/preview", adminUserH.PreviewZombies)

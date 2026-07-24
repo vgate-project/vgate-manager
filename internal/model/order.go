@@ -14,6 +14,8 @@ const (
 	OrderPlatformAlipay = "alipay"
 	OrderPlatformWechat = "wechat"
 	OrderPlatformStripe = "stripe"
+	OrderPlatformPaypal = "paypal"
+	OrderPlatformApple  = "apple"
 	OrderPlatformManual = "manual"
 	// OrderPlatformBalance is set when an order is paid entirely or partly from
 	// the user's account balance (wallet) rather than a payment gateway.

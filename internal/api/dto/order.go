@@ -9,7 +9,10 @@ type CreateOrderRequest struct {
 	PlanID           string `json:"plan_id"`                 // required when kind=plan
 	PlanPriceID      string `json:"plan_price_id"`           // required when kind=plan
 	TrafficPackageID string `json:"traffic_package_id"`      // required when kind=traffic
-	Platform         string `json:"platform"`                // optional: payment gateway; defaults to alipay
+	// Platform is the chosen payment gateway (one of the values returned by
+	// GET /user/payment-methods). Optional: when empty the server picks the
+	// first admin-enabled, configured channel.
+	Platform string `json:"platform"`
 }
 
 type AdminCreateOrderRequest struct {
@@ -32,6 +35,10 @@ type CreateOrderResponse struct {
 type ChangePlanRequest struct {
 	PlanID      string `json:"plan_id" binding:"required"`
 	PlanPriceID string `json:"plan_price_id" binding:"required"`
+	// Platform is the chosen payment gateway for the top-up portion of the
+	// switch. Optional: when empty the server picks the first enabled,
+	// configured channel.
+	Platform string `json:"platform"`
 }
 
 // BalanceResponse is the body for GET /user/balance (and the admin variant):
@@ -54,4 +61,22 @@ type AdminAdjustBalanceRequest struct {
 // "paid" and "closed" are accepted (pending is the terminal source state).
 type UpdateOrderStatusRequest struct {
 	Status string `json:"status" binding:"required,oneof=paid closed"`
+}
+
+// PaymentMethodInfo describes a payment channel surfaced to the frontend
+// picker. Enabled reflects the admin's explicit toggle (absent = enabled);
+// Configured reflects whether the gateway credentials are present.
+type PaymentMethodInfo struct {
+	Platform   string `json:"platform"`
+	Label      string `json:"label"`
+	Mode       string `json:"mode"` // "redirect" | "qr" | "iap"
+	Enabled    bool   `json:"enabled"`
+	Configured bool   `json:"configured"`
+}
+
+// AppleVerifyRequest is the body for POST /user/orders/:id/apple-verify, posted
+// by the native app after an App Store purchase. transaction is the signed
+// JWS transaction returned by StoreKit.
+type AppleVerifyRequest struct {
+	Transaction string `json:"transaction" binding:"required"`
 }

@@ -56,6 +56,18 @@ func Register(r *payment.Registry) {
 // Platform implements payment.Provider.
 func (p *Provider) Platform() string { return Platform }
 
+// Mode implements payment.Provider. Stripe uses a hosted checkout redirect.
+func (p *Provider) Mode() string { return payment.ModeRedirect }
+
+// IsConfigured implements payment.ConfigStatusProvider.
+func (p *Provider) IsConfigured() bool {
+	cfg, err := p.loadConfig()
+	if err != nil {
+		return false
+	}
+	return cfg.SecretKey != "" && cfg.WebhookSecret != "" && cfg.SuccessURL != "" && cfg.CancelURL != ""
+}
+
 func (p *Provider) loadConfig() (Config, error) {
 	m, err := p.getConfig()
 	if err != nil {

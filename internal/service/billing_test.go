@@ -18,7 +18,7 @@ func testDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&model.User{}, &model.Plan{}, &model.PlanPrice{},
-		&model.TrafficPackage{}, &model.Order{},
+		&model.TrafficPackage{}, &model.Order{}, &model.TrafficGrant{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestApplyTrafficEffectValidity(t *testing.T) {
 	}
 	var got1 model.User
 	db.Where("id = ?", "u1").First(&got1)
-	if got1.QuotaBytes != 500 {
-		t.Errorf("QuotaBytes = %d, want 500", got1.QuotaBytes)
+	if got1.TrafficQuotaBytes != 500 {
+		t.Errorf("TrafficQuotaBytes = %d, want 500", got1.TrafficQuotaBytes)
 	}
 	if got1.Level != 2 {
 		t.Errorf("Level changed for traffic purchase: %d, want 2", got1.Level)
@@ -147,8 +147,8 @@ func TestApplyTrafficEffectValidity(t *testing.T) {
 	if got2.ExpireAt != nil {
 		t.Errorf("ExpireAt should be nil when validity=0, got %v", got2.ExpireAt)
 	}
-	if got2.QuotaBytes != 500 {
-		t.Errorf("QuotaBytes = %d, want 500", got2.QuotaBytes)
+	if got2.TrafficQuotaBytes != 500 {
+		t.Errorf("TrafficQuotaBytes = %d, want 500", got2.TrafficQuotaBytes)
 	}
 
 	// Case 3: buying a traffic package opts the user OUT of the global monthly
@@ -170,8 +170,8 @@ func TestApplyTrafficEffectValidity(t *testing.T) {
 	if got3.QuotaResetEnabled {
 		t.Errorf("QuotaResetEnabled = %v, want false (traffic purchase must opt out of monthly reset)", got3.QuotaResetEnabled)
 	}
-	if got3.QuotaBytes != 500 {
-		t.Errorf("QuotaBytes = %d, want 500", got3.QuotaBytes)
+	if got3.TrafficQuotaBytes != 500 {
+		t.Errorf("TrafficQuotaBytes = %d, want 500", got3.TrafficQuotaBytes)
 	}
 	// The already-consumed traffic must be preserved (only the reset flag, not
 	// the usage, is what we care about here).

@@ -30,6 +30,13 @@ type Provider interface {
 	// Order.Platform (e.g. model.OrderPlatformAlipay).
 	Platform() string
 
+	// Mode reports how the frontend should present the PayDirective returned by
+	// PayURL. Known values: "redirect" (open URL in a browser, e.g. stripe /
+	// paypal checkout), "qr" (render URL as a QR code to scan, e.g. alipay /
+	// wechat NATIVE), and "iap" (an in-app purchase the user completes inside a
+	// native app, e.g. Apple App Store — there is no URL to open).
+	Mode() string
+
 	// PayURL returns a PayDirective describing how the user pays for order.
 	PayURL(order *model.Order, subject string) (*PayDirective, error)
 
@@ -41,6 +48,52 @@ type Provider interface {
 	// paid=false with a nil error so the gateway can be told the notification
 	// was received without granting entitlement.
 	VerifyNotify(ctx context.Context, r *http.Request) (outTradeNo, tradeNo string, paid bool, err error)
+}
+
+// ConfigStatusProvider is optionally implemented by providers that can report
+// whether they are fully configured (i.e. the required credentials are
+// present in SystemConfig). The Registry uses it to build the list of
+// available payment methods surfaced to the frontend; providers that do not
+// implement it are always reported as configured.
+type ConfigStatusProvider interface {
+	// IsConfigured reports whether the provider has the credentials it needs
+	// to actually collect a payment.
+	IsConfigured() bool
+}
+
+// ChannelMode enumerates the values returned by Provider.Mode.
+const (
+	ModeRedirect = "redirect"
+	ModeQR       = "qr"
+	ModeIAP      = "iap"
+)
+
+// ChannelInfo describes a registered payment platform for the "list available
+// methods" endpoint. Enabled reflects the admin's explicit on/off toggle
+// (payment.<platform>.enabled; absent = enabled for backward compatibility);
+// Configured reflects whether the provider's credentials are present.
+type ChannelInfo struct {
+	Platform   string `json:"platform"`
+	Label      string `json:"label"`
+	Mode       string `json:"mode"`
+	Enabled    bool   `json:"enabled"`
+	Configured bool   `json:"configured"`
+}
+
+// PlatformLabel maps a platform identifier to a human-readable label used by
+// the frontend and the available-methods endpoint.
+var PlatformLabel = map[string]string{
+	model.OrderPlatformAlipay: "Alipay",
+	model.OrderPlatformWechat: "WeChat Pay",
+	model.OrderPlatformStripe: "Stripe",
+	model.OrderPlatformPaypal: "PayPal",
+	model.OrderPlatformApple:  "Apple (App Store)",
+}
+
+// PlatformEnabledKey returns the SystemConfig key that holds the admin's
+// explicit on/off toggle for the given platform.
+func PlatformEnabledKey(platform string) string {
+	return "payment." + platform + ".enabled"
 }
 
 // ConfigSource supplies the raw SystemConfig key/value map. Injected as a

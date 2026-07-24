@@ -18,7 +18,7 @@ func changePlanTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open db: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Plan{}, &model.PlanPrice{}, &model.Order{},
+		&model.User{}, &model.Plan{}, &model.PlanPrice{}, &model.Order{}, &model.TrafficGrant{},
 		&model.BalanceTransaction{}, &model.SystemConfig{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -98,7 +98,7 @@ func TestChangePlanUpgradeImmediate(t *testing.T) {
 	}
 
 	svc := NewOrderService(db, NewSystemConfigService(db), nil, NewBalanceService(db))
-	res, err := svc.ChangePlan("u1", "p2", "pp2")
+	res, err := svc.ChangePlan("u1", "p2", "pp2", "")
 	if err != nil {
 		t.Fatalf("ChangePlan: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestChangePlanDowngradeImmediateRefunds(t *testing.T) {
 	}
 
 	svc := NewOrderService(db, NewSystemConfigService(db), nil, NewBalanceService(db))
-	res, err := svc.ChangePlan("u1", "p2", "pp2")
+	res, err := svc.ChangePlan("u1", "p2", "pp2", "")
 	if err != nil {
 		t.Fatalf("ChangePlan: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestChangePlanSwitchNoBalanceInflation(t *testing.T) {
 	}
 
 	svc := NewOrderService(db, NewSystemConfigService(db), nil, NewBalanceService(db))
-	res, err := svc.ChangePlan("u1", "p2", "pp2")
+	res, err := svc.ChangePlan("u1", "p2", "pp2", "")
 	if err != nil {
 		t.Fatalf("ChangePlan: %v", err)
 	}

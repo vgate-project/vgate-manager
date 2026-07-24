@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
@@ -76,12 +77,43 @@ func (h *UserHandler) Subscribe(c *gin.Context) {
 	if writeErr(c, err) {
 		return
 	}
-	ct, body, err := h.subSvc.Render(user, detectClientType(c))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	// ?type= may request several formats at once (e.g. raw,base64). When more
+	// than one is requested we return them as a JSON object keyed by token,
+	// collapsing what used to be multiple calls to this endpoint into one.
+	types := c.Query("type")
+	if types == "" {
+		ct, body, err := h.subSvc.Render(user, detectClientType(c))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		writeETagged(c, ct, body)
 		return
 	}
-	writeETagged(c, ct, body)
+	tokens := strings.Split(types, ",")
+	if len(tokens) == 1 {
+		ct, body, err := h.subSvc.Render(user, clientTypeFromToken(tokens[0]))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		writeETagged(c, ct, body)
+		return
+	}
+	out := make(map[string]string, len(tokens))
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		_, body, err := h.subSvc.Render(user, clientTypeFromToken(t))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		out[t] = string(body)
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 // Nodes serves GET /api/v1/user/nodes — the nodes assigned to the caller, with

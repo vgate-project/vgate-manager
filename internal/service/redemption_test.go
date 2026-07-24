@@ -30,7 +30,7 @@ func newRedemptionTestDB(t *testing.T) *gorm.DB {
 		&model.Plan{},
 		&model.PlanPrice{},
 		&model.RedemptionCode{},
-		&model.RedemptionRecord{},
+		&model.RedemptionRecord{}, &model.TrafficGrant{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -99,8 +99,8 @@ func TestRedemptionTraffic(t *testing.T) {
 
 	var u model.User
 	db.First(&u, "id = ?", userID)
-	if u.QuotaBytes != 1<<30 {
-		t.Errorf("expected quota 1<<30, got %d", u.QuotaBytes)
+	if u.TrafficQuotaBytes != 1<<30 {
+		t.Errorf("expected traffic quota 1<<30, got %d", u.TrafficQuotaBytes)
 	}
 	if u.QuotaResetEnabled {
 		t.Error("expected quota_reset_enabled false after traffic grant")

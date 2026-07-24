@@ -131,3 +131,22 @@ func detectClientType(c *gin.Context) string {
 		return "raw"
 	}
 }
+
+// clientTypeFromToken maps an explicit ?type= token to a SubscriptionService
+// render client type, without User-Agent sniffing. Used when the caller asks
+// for several formats at once (e.g. ?type=raw,base64) so each requested token
+// maps deterministically to a rendered payload.
+func clientTypeFromToken(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "clash":
+		return "clash"
+	case "v2rayn", "base64":
+		return "v2rayn"
+	case "raw":
+		return "raw"
+	case "surge":
+		return "v2rayn" // unsupported → widest-compatible fallback
+	default:
+		return "raw"
+	}
+}

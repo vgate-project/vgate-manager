@@ -123,7 +123,7 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 	}
 	if err := s.db.Model(&model.User{}).Select(
 		"COUNT(CASE WHEN expire_at IS NOT NULL AND expire_at <= ? THEN 1 END) AS expiring7d, "+
-			"COUNT(CASE WHEN quota_bytes > 0 AND (up_total + down_total) >= quota_bytes THEN 1 END) AS quota_exhausted, "+
+			"COUNT(CASE WHEN quota_bytes > 0 AND (up_total + down_total) >= (quota_bytes + COALESCE(traffic_quota_bytes, 0)) THEN 1 END) AS quota_exhausted, "+
 			"COUNT(CASE WHEN email_verified = false THEN 1 END) AS unverified, "+
 			"COUNT(CASE WHEN created_at >= ? THEN 1 END) AS new_today, "+
 			"COUNT(CASE WHEN created_at >= ? AND created_at < ? THEN 1 END) AS new_yesterday",

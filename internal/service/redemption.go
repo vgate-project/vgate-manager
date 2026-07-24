@@ -241,10 +241,25 @@ func (s *RedemptionService) applyBenefit(tx *gorm.DB, user *model.User, code *mo
 	now := time.Now()
 	switch code.Type {
 	case model.RedeemTypeTraffic:
-		user.QuotaBytes += code.QuotaBytes
+		user.TrafficQuotaBytes += code.QuotaBytes
 		// A granted quota add-on must not be wiped by the monthly reset.
 		user.QuotaResetEnabled = false
 		if err := tx.Save(user).Error; err != nil {
+			return "", err
+		}
+		// A redeemed traffic code has no independent expiry: the bonus is
+		// permanent until the user is deleted (ExpireAt left nil), so it is
+		// never auto-reclaimed.
+		grant := &model.TrafficGrant{
+			ID:         util.NewNodeID(),
+			UserID:     user.ID,
+			Source:     model.GrantSourceRedemption,
+			SourceID:   code.ID,
+			QuotaBytes: code.QuotaBytes,
+			GrantedAt:  now,
+			ExpireAt:   nil,
+		}
+		if err := tx.Create(grant).Error; err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("granted %d bytes of traffic", code.QuotaBytes), nil
