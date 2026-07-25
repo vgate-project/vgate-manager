@@ -29,12 +29,12 @@ func TestListAppendsOffShelfRenewablePlan(t *testing.T) {
 
 	// User owns an off-shelf plan that allows renewal.
 	user := model.User{
-		ID:                "u1",
-		Credential:        "u1",
-		Email:             "u1@example.com",
-		SubToken:          "sub-u1",
-		CurrentProductID:   "p1",
-		ExpireAt:          &expire,
+		ID:               "u1",
+		Credential:       "u1",
+		Email:            "u1@example.com",
+		SubToken:         "sub-u1",
+		CurrentProductID: "p1",
+		ExpireAt:         &expire,
 	}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
@@ -90,12 +90,12 @@ func TestListHidesOffShelfPlanWhenRenewNotAllowed(t *testing.T) {
 	now := time.Now()
 	expire := now.Add(10 * 24 * time.Hour)
 	user := model.User{
-		ID:                "u1",
-		Credential:        "u1",
-		Email:             "u1@example.com",
-		SubToken:          "sub-u1",
-		CurrentProductID:   "p1",
-		ExpireAt:          &expire,
+		ID:               "u1",
+		Credential:       "u1",
+		Email:            "u1@example.com",
+		SubToken:         "sub-u1",
+		CurrentProductID: "p1",
+		ExpireAt:         &expire,
 	}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)

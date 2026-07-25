@@ -88,7 +88,7 @@ func TestChangePlanUpgradeImmediate(t *testing.T) {
 	expire := time.Now().Add(10 * 24 * time.Hour)
 	user := model.User{
 		ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
-		EmailVerified: true, CurrentProductID: "p1", 		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
+		EmailVerified: true, CurrentProductID: "p1", ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
 		BalanceCents: 5000,
 	}
 	if err := db.Create(&user).Error; err != nil {
@@ -152,7 +152,7 @@ func TestChangePlanDowngradeImmediateRefunds(t *testing.T) {
 	expire := time.Now().Add(10 * 24 * time.Hour)
 	user := model.User{
 		ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
-		EmailVerified: true, CurrentProductID: "p1", 		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
+		EmailVerified: true, CurrentProductID: "p1", ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
 		BalanceCents: 0,
 	}
 	if err := db.Create(&user).Error; err != nil {
@@ -212,7 +212,7 @@ func TestChangePlanSwitchNoBalanceInflation(t *testing.T) {
 	expire := time.Now().Add(10 * 24 * time.Hour)
 	user := model.User{
 		ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
-		EmailVerified: true, CurrentProductID: "p1", 		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
+		EmailVerified: true, CurrentProductID: "p1", ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
 		BalanceCents: 0,
 	}
 	if err := db.Create(&user).Error; err != nil {
@@ -254,7 +254,7 @@ func TestPreviewChangePlan(t *testing.T) {
 	expire := time.Now().Add(10 * 24 * time.Hour)
 	user := model.User{
 		ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
-		EmailVerified: true, CurrentProductID: "p1", 		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
+		EmailVerified: true, CurrentProductID: "p1", ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
 		BalanceCents: 5000,
 	}
 	if err := db.Create(&user).Error; err != nil {

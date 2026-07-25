@@ -585,14 +585,14 @@ func (s *OrderService) ChangePlan(userID, planID, planPriceID, platform string) 
 		return nil, err
 	}
 	return &ChangePlanResult{
-		Order:               order,
-		PayURL:              directive.URL,
-		PayMode:             directive.Kind,
-		Paid:                order.Status == model.OrderStatusPaid,
-		CreditCents:         0,
-		NetChargeCents:      newPrice,
-		Immediate:           true,
-		WalletUsedCents:     directive.WalletUsedCents,
+		Order:                order,
+		PayURL:               directive.URL,
+		PayMode:              directive.Kind,
+		Paid:                 order.Status == model.OrderStatusPaid,
+		CreditCents:          0,
+		NetChargeCents:       newPrice,
+		Immediate:            true,
+		WalletUsedCents:      directive.WalletUsedCents,
 		WalletRemainingCents: directive.WalletRemainingCents,
 	}, nil
 }
@@ -684,12 +684,12 @@ func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, entry *m
 			}
 		}
 		result = &ChangePlanResult{
-			Order:               order,
-			Paid:                fullyPaid,
-			CreditCents:         remainingValue,
-			NetChargeCents:      net,
-			Immediate:           true,
-			WalletUsedCents:     used,
+			Order:                order,
+			Paid:                 fullyPaid,
+			CreditCents:          remainingValue,
+			NetChargeCents:       net,
+			Immediate:            true,
+			WalletUsedCents:      used,
 			WalletRemainingCents: walletRemaining,
 		}
 		return nil

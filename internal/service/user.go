@@ -135,6 +135,7 @@ func (s *UserService) Create(user *model.User, password string) error {
 		}
 		user.PasswordHash = &hash
 	}
+	user.QuotaResetEnabled = true
 	return s.db.Create(user).Error
 }
 
@@ -417,8 +418,8 @@ func (s *UserService) ResetDueQuotas() (int64, error) {
 		u := &users[i]
 		newUp, newDown := packagePreservingReset(u.UpTotal, u.DownTotal, u.PackageUsedBytes)
 		if err := s.db.Model(u).Updates(map[string]any{
-			"up_total":      newUp,
-			"down_total":    newDown,
+			"up_total":   newUp,
+			"down_total": newDown,
 		}).Error; err != nil {
 			return n, err
 		}

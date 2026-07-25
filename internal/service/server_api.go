@@ -180,12 +180,12 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 			delta := up + down
 			pkgConsumed := int64(0)
 			if delta > 0 {
-			var grants []model.TrafficGrant
-			if err := tx.Where("user_id = ?", user.ID).
-				Order("granted_at ASC").
-				Find(&grants).Error; err != nil {
-				return fmt.Errorf("load traffic grants for %s: %w", user.ID, err)
-			}
+				var grants []model.TrafficGrant
+				if err := tx.Where("user_id = ?", user.ID).
+					Order("granted_at ASC").
+					Find(&grants).Error; err != nil {
+					return fmt.Errorf("load traffic grants for %s: %w", user.ID, err)
+				}
 				room := int64(0)
 				for i := range grants {
 					room += grants[i].RemainingBytes()
@@ -223,10 +223,10 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 			// reset can preserve it.
 			if err := tx.Model(&model.User{}).Where("id = ?", user.ID).
 				Updates(map[string]any{
-					"up_total":          gorm.Expr("up_total + ?", up),
-					"down_total":        gorm.Expr("down_total + ?", down),
+					"up_total":           gorm.Expr("up_total + ?", up),
+					"down_total":         gorm.Expr("down_total + ?", down),
 					"package_used_bytes": gorm.Expr("package_used_bytes + ?", pkgConsumed),
-					"last_traffic_at":   now,
+					"last_traffic_at":    now,
 				}).Error; err != nil {
 				return fmt.Errorf("update user traffic: %w", err)
 			}

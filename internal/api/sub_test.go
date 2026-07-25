@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	yaml "go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v3"
 
 	vgcrypto "github.com/vgate-project/vgate-manager/pkg/crypto"
 )

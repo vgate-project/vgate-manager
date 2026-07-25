@@ -20,8 +20,8 @@ type User struct {
 	// CurrentProductName is the display name of CurrentProductID, populated by
 	// the service layer (not stored). Empty when no active product or the
 	// product no longer exists.
-	CurrentProductName string `gorm:"-" json:"current_product_name,omitempty"`
-	Email              string `gorm:"uniqueIndex;size:255;not null" json:"email"`
+	CurrentProductName string  `gorm:"-" json:"current_product_name,omitempty"`
+	Email              string  `gorm:"uniqueIndex;size:255;not null" json:"email"`
 	Username           *string `gorm:"uniqueIndex;size:64" json:"username,omitempty"`
 	PasswordHash       *string `gorm:"size:128" json:"-"` // bcrypt, nullable
 	// HasPassword is a derived flag (not stored) exposing whether the user has
