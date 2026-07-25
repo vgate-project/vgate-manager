@@ -35,6 +35,10 @@ var (
 	// by an account that has not yet verified its email. Admins placing orders
 	// on a user's behalf are exempt.
 	ErrEmailNotVerified = errors.New("email not verified")
+	// ErrNoActivePlan is returned when a traffic-package purchase is attempted
+	// by a user with no active plan. Traffic packages are add-ons that require
+	// a current plan; they cannot be bought standalone.
+	ErrNoActivePlan = errors.New("a traffic package requires an active plan")
 )
 
 // CreateOrderParams describes what a user wants to buy.
@@ -58,6 +62,11 @@ type ChangePlanResult struct {
 	CreditCents    int64        `json:"credit_cents"`
 	NetChargeCents int64        `json:"net_charge_cents"` // plan price (difference for upgrades)
 	Immediate      bool         `json:"immediate"`
+	// Wallet fields: amount of the net charge covered by the wallet and the
+	// balance remaining after the debit. Populated whenever the wallet is used
+	// (0 for a pure gateway payment).
+	WalletUsedCents      int64 `json:"wallet_used_cents"`
+	WalletRemainingCents int64 `json:"wallet_remaining_cents"`
 }
 
 // OrderService handles plan/traffic purchases, payment-url generation,
@@ -117,8 +126,6 @@ func (s *OrderService) resolvePaymentSubject(kind, productName, period string, a
 	switch kind {
 	case model.OrderKindTraffic:
 		return productName, nil
-	case model.OrderKindReset:
-		return productName + " traffic reset", nil
 	default: // plan
 		return period + " plan", nil
 	}
@@ -205,48 +212,36 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 			return nil, nil, err
 		}
 		allowDisabled := isAdmin || (plan.AllowRenewOffShelf &&
-			user.CurrentProductID == p.PlanID && user.CurrentProductKind == model.OrderKindPlan)
+			user.CurrentProductID == p.PlanID)
 		price, err := s.planSvc.loadPlanPrice(p.PlanID, p.PlanPriceID, allowDisabled)
 		if err != nil {
 			return nil, nil, err
 		}
-		order.PlanID = price.PlanID
-		order.PlanPriceID = price.ID
+		order.PlanID = p.PlanID
+		order.PlanPriceID = "" // plan_prices table removed; period is the new identifier
 		order.Period = price.Period
 		order.DurationDays = price.DurationDays
 		order.Amount = price.Price
+		order.PlanPriceCents = price.Price // snapshot gross price for proration
 		subject, err = s.resolvePaymentSubject(model.OrderKindPlan, plan.Name, price.Period, order.Amount, plan.DisplayName)
 		if err != nil {
 			return nil, nil, err
 		}
 	case model.OrderKindTraffic:
+		// Traffic packages are add-ons: they can only be bought on top of an
+		// active plan, so reset/change-plan keep working and the package stays
+		// a bonus rather than replacing the plan as the current product.
+		if user.CurrentProductID == "" ||
+			user.ExpireAt == nil || !user.ExpireAt.After(time.Now()) {
+			return nil, nil, ErrNoActivePlan
+		}
 		pkg, err := s.trafficSvc.loadEnabled(p.TrafficPackageID)
 		if err != nil {
 			return nil, nil, err
 		}
 		order.TrafficPackageID = pkg.ID
-		order.ValidityDays = pkg.ValidityDays
 		order.Amount = pkg.Price
 		subject, err = s.resolvePaymentSubject(model.OrderKindTraffic, pkg.Name, "", order.Amount, pkg.DisplayName)
-		if err != nil {
-			return nil, nil, err
-		}
-	case model.OrderKindReset:
-		plan, err := s.planSvc.loadEnabledPlan(p.PlanID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !plan.ResetEnabled {
-			return nil, nil, errors.New("plan has no traffic reset package")
-		}
-		if !isAdmin {
-			if user.CurrentProductID != plan.ID {
-				return nil, nil, errors.New("traffic reset is only available for your active plan")
-			}
-		}
-		order.PlanID = plan.ID
-		order.Amount = plan.ResetPrice
-		subject, err = s.resolvePaymentSubject(model.OrderKindReset, plan.Name, "", order.Amount, plan.DisplayName)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -257,6 +252,7 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 	// Apply the wallet: deduct whatever balance covers from the gross amount.
 	gross := order.Amount
 	var created *model.Order
+	var walletUsed, walletRemaining int64
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var u model.User
 		if err := tx.First(&u, "id = ?", userID).Error; err != nil {
@@ -267,9 +263,12 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 			used = min(u.BalanceCents, gross)
 		}
 		if used > 0 {
-			if _, err := s.balanceSvc.Debit(tx, userID, used, model.BalanceReasonPurchase, order.ID, "wallet payment"); err != nil {
+			newBal, err := s.balanceSvc.Debit(tx, userID, used, model.BalanceReasonPurchase, order.ID, "wallet payment")
+			if err != nil {
 				return err
 			}
+			walletUsed = used
+			walletRemaining = newBal
 		}
 		if used == gross {
 			order.Status = model.OrderStatusPaid
@@ -297,7 +296,10 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 
 	if created.Status == model.OrderStatusPaid {
 		// No gateway step required.
-		return created, &payment.PayDirective{}, nil
+		return created, &payment.PayDirective{
+			WalletUsedCents:      walletUsed,
+			WalletRemainingCents: walletRemaining,
+		}, nil
 	}
 	prov, err := s.payments.Get(created.Platform)
 	if err != nil {
@@ -307,6 +309,8 @@ func (s *OrderService) createFor(userID string, p CreateOrderParams, isAdmin boo
 	if err != nil {
 		return nil, nil, err
 	}
+	directive.WalletUsedCents = walletUsed
+	directive.WalletRemainingCents = walletRemaining
 	return created, directive, nil
 }
 
@@ -317,7 +321,7 @@ func (s *OrderService) ownsPlan(userID, planID string) (bool, error) {
 	if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
 		return false, err
 	}
-	return u.CurrentProductID == planID && u.CurrentProductKind == model.OrderKindPlan, nil
+	return u.CurrentProductID == planID, nil
 }
 
 // Reconcile handles an async payment-gateway notification for platform. It
@@ -414,27 +418,27 @@ func applyOrderEffect(tx *gorm.DB, order *model.Order) error {
 		if err := tx.Where("id = ?", order.TrafficPackageID).First(&pkg).Error; err != nil {
 			return err
 		}
-		return applyTrafficEffect(tx, &user, &pkg, order.ValidityDays)
-	case model.OrderKindReset:
-		var plan model.Plan
-		if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
-			return err
-		}
-		return applyResetEffect(tx, &user, &plan)
+		return applyTrafficEffect(tx, &user, &pkg)
 	default: // plan
 		var plan model.Plan
 		if err := tx.Where("id = ?", order.PlanID).First(&plan).Error; err != nil {
 			return err
 		}
-		var price model.PlanPrice
-		if err := tx.Where("id = ?", order.PlanPriceID).First(&price).Error; err != nil {
-			return err
+		paidCents := order.PlanPriceCents
+		if paidCents <= 0 {
+			// Legacy order created before PlanPriceCents was snapshotted:
+			// fall back to looking up the PlanPrice row.
+			var price model.PlanPrice
+			if err := tx.Where("id = ?", order.PlanPriceID).First(&price).Error; err != nil {
+				return err
+			}
+			paidCents = price.Price
 		}
 		base := defaultBase(&user)
 		if !order.ExtendFromOldExpiry {
 			base = time.Now()
 		}
-		return applyPlanEffect(tx, &user, &plan, order.DurationDays, price.Price, base)
+		return applyPlanEffect(tx, &user, &plan, order.DurationDays, paidCents, base)
 	}
 }
 
@@ -447,42 +451,34 @@ func applyOrderEffect(tx *gorm.DB, order *model.Order) error {
 // caller may have just mutated in the same transaction — notably balance_cents,
 // which a wallet debit has already written.
 func applyPlanEffect(tx *gorm.DB, user *model.User, plan *model.Plan, durationDays int, paidCents int64, base time.Time) error {
-	now := time.Now()
+	// A plan purchase / renewal starts a new base-plan window: zero only the
+	// base usage and keep any traffic already charged to packages / redemption
+	// grants (package_used_bytes). A first-time purchase has package_used_bytes
+	// = 0, so this is a no-op and behaves as before.
+	newUp, newDown := packagePreservingReset(user.UpTotal, user.DownTotal, user.PackageUsedBytes)
 	return tx.Model(user).Updates(map[string]any{
 		"expire_at":                  new(base.AddDate(0, 0, durationDays)),
 		"quota_bytes":                plan.QuotaBytes,
-		"up_total":                   0,
-		"down_total":                 0,
-		"last_reset_at":              &now,
+		"up_total":                   newUp,
+		"down_total":                 newDown,
 		"level":                      plan.Level,
 		"speed_limit_up_bps":         plan.SpeedLimitUpBps,
 		"speed_limit_down_bps":       plan.SpeedLimitDownBps,
 		"current_product_id":         plan.ID,
-		"current_product_kind":       model.OrderKindPlan,
 		"current_plan_paid_cents":    paidCents,
 		"current_plan_duration_days": durationDays,
 	}).Error
 }
 
-// applyTrafficEffect adds the package's quota as a tracked bonus (so it can be
-// reclaimed on expiry) rather than merging it into the user's base quota_bytes.
-// When validityDays > 0 it also extends the user's ExpireAt so the traffic is
-// usable for that window; the same instant becomes the grant's own expiry so
-// the reclaim job can recover the bonus when it lapses. validityDays == 0 means
-// the package has no independent expiry (it lives until the user's own
-// expire_at gates access) and the grant is permanent.
-func applyTrafficEffect(tx *gorm.DB, user *model.User, pkg *model.TrafficPackage, validityDays int) error {
+// applyTrafficEffect adds the package's quota as a permanent tracked bonus on
+// top of the user's current plan. It deliberately does NOT touch
+// CurrentProductID or QuotaResetEnabled: a traffic package is an add-on,
+// not a standalone product, so the plan remains the current product and
+// change-plan keeps working. The bonus grant is permanent — it lives on the
+// user's traffic_quota_bytes until the user is deleted — and package_used_bytes
+// tracks the portion of traffic charged to it.
+func applyTrafficEffect(tx *gorm.DB, user *model.User, pkg *model.TrafficPackage) error {
 	user.TrafficQuotaBytes += pkg.QuotaBytes
-	user.QuotaResetEnabled = false
-	user.CurrentProductID = pkg.ID
-	user.CurrentProductKind = model.OrderKindTraffic
-	var grantExpire *time.Time
-	if validityDays > 0 {
-		base := defaultBase(user)
-		exp := base.AddDate(0, 0, validityDays)
-		user.ExpireAt = &exp
-		grantExpire = &exp
-	}
 	if err := tx.Save(user).Error; err != nil {
 		return err
 	}
@@ -491,20 +487,11 @@ func applyTrafficEffect(tx *gorm.DB, user *model.User, pkg *model.TrafficPackage
 		UserID:     user.ID,
 		Source:     model.GrantSourceTrafficPackage,
 		SourceID:   pkg.ID,
+		Name:       pkg.Name,
 		QuotaBytes: pkg.QuotaBytes,
 		GrantedAt:  time.Now(),
-		ExpireAt:   grantExpire,
 	}
 	return tx.Create(grant).Error
-}
-
-// applyResetEffect replenishes the user's plan quota by zeroing the used
-// traffic counters. It does NOT change quota_bytes, level, or expire_at.
-func applyResetEffect(tx *gorm.DB, user *model.User, plan *model.Plan) error {
-	user.UpTotal = 0
-	user.DownTotal = 0
-	user.LastResetAt = new(time.Now())
-	return tx.Save(user).Error
 }
 
 // daily returns the per-day price (cents/day) for a paid entitlement, guarding
@@ -520,7 +507,7 @@ func daily(paidCents int64, durationDays int) float64 {
 // user's current plan entitlement in cents, using time-based proration. It is
 // 0 unless the current product is an active plan with recorded paid/duration.
 func computeRemainingValue(user *model.User) int64 {
-	if user.CurrentProductKind != model.OrderKindPlan ||
+	if user.CurrentProductID == "" ||
 		user.ExpireAt == nil || !user.ExpireAt.After(time.Now()) ||
 		user.CurrentPlanDurationDays <= 0 || user.CurrentPlanPaidCents <= 0 {
 		return 0
@@ -566,7 +553,7 @@ func (s *OrderService) ChangePlan(userID, planID, planPriceID, platform string) 
 	if err != nil {
 		return nil, err
 	}
-	allowDisabled := user.CurrentProductID == planID && user.CurrentProductKind == model.OrderKindPlan
+	allowDisabled := user.CurrentProductID == planID
 	price, err := s.planSvc.loadPlanPrice(planID, planPriceID, allowDisabled)
 	if err != nil {
 		return nil, err
@@ -574,7 +561,7 @@ func (s *OrderService) ChangePlan(userID, planID, planPriceID, platform string) 
 	newPrice := price.Price
 	newDuration := price.DurationDays
 
-	active := user.CurrentProductKind == model.OrderKindPlan &&
+	active := user.CurrentProductID != "" &&
 		user.ExpireAt != nil && user.ExpireAt.After(time.Now())
 	crossPlan := active && user.CurrentProductID != planID
 
@@ -591,20 +578,22 @@ func (s *OrderService) ChangePlan(userID, planID, planPriceID, platform string) 
 	order, directive, err := s.Create(userID, CreateOrderParams{
 		Kind:        model.OrderKindPlan,
 		PlanID:      planID,
-		PlanPriceID: price.ID,
+		PlanPriceID: price.Period,
 		Platform:    platform,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &ChangePlanResult{
-		Order:          order,
-		PayURL:         directive.URL,
-		PayMode:        directive.Kind,
-		Paid:           order.Status == model.OrderStatusPaid,
-		CreditCents:    0,
-		NetChargeCents: newPrice,
-		Immediate:      true,
+		Order:               order,
+		PayURL:              directive.URL,
+		PayMode:             directive.Kind,
+		Paid:                order.Status == model.OrderStatusPaid,
+		CreditCents:         0,
+		NetChargeCents:      newPrice,
+		Immediate:           true,
+		WalletUsedCents:     directive.WalletUsedCents,
+		WalletRemainingCents: directive.WalletRemainingCents,
 	}, nil
 }
 
@@ -616,7 +605,7 @@ func (s *OrderService) ChangePlan(userID, planID, planPriceID, platform string) 
 // (remainingValue - newPrice): a surplus (refund) on downgrade, a charge on
 // upgrade. NetChargeCents returned to the client is the informational
 // newPrice - remainingValue (negative on downgrade).
-func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, price *model.PlanPrice, newPrice int64, newDuration int, platform string) (*ChangePlanResult, error) {
+func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, entry *model.PlanPriceEntry, newPrice int64, newDuration int, platform string) (*ChangePlanResult, error) {
 	if platform == "" {
 		platform = s.payments.DefaultPlatform()
 	}
@@ -648,14 +637,17 @@ func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, price *m
 			return err
 		}
 		used := int64(0)
+		var walletRemaining int64
 		if u.BalanceCents > 0 {
 			used = min(u.BalanceCents, newPrice)
 		}
 		if used > 0 {
-			if _, err := s.balanceSvc.Debit(tx, userID, used,
-				model.BalanceReasonPurchase, "", "plan change"); err != nil {
+			newBal, err := s.balanceSvc.Debit(tx, userID, used,
+				model.BalanceReasonPurchase, "", "plan change")
+			if err != nil {
 				return err
 			}
+			walletRemaining = newBal
 		}
 
 		order := &model.Order{
@@ -663,10 +655,11 @@ func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, price *m
 			UserID:              userID,
 			Kind:                model.OrderKindPlan,
 			PlanID:              plan.ID,
-			PlanPriceID:         price.ID,
-			Period:              price.Period,
+			PlanPriceID:         "",
+			Period:              entry.Period,
 			DurationDays:        newDuration,
 			Amount:              newPrice,
+			PlanPriceCents:      newPrice,
 			Status:              model.OrderStatusPending,
 			Platform:            platform,
 			OutTradeNo:          util.RandomToken(16),
@@ -691,11 +684,13 @@ func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, price *m
 			}
 		}
 		result = &ChangePlanResult{
-			Order:          order,
-			Paid:           fullyPaid,
-			CreditCents:    remainingValue,
-			NetChargeCents: net,
-			Immediate:      true,
+			Order:               order,
+			Paid:                fullyPaid,
+			CreditCents:         remainingValue,
+			NetChargeCents:      net,
+			Immediate:           true,
+			WalletUsedCents:     used,
+			WalletRemainingCents: walletRemaining,
 		}
 		return nil
 	})
@@ -708,7 +703,7 @@ func (s *OrderService) applyPlanSwitch(userID string, plan *model.Plan, price *m
 		if err != nil {
 			return nil, err
 		}
-		subject, err := s.resolvePaymentSubject(model.OrderKindPlan, plan.Name, price.Period, result.Order.Amount, plan.DisplayName)
+		subject, err := s.resolvePaymentSubject(model.OrderKindPlan, plan.Name, entry.Period, result.Order.Amount, plan.DisplayName)
 		if err != nil {
 			return nil, err
 		}
@@ -747,7 +742,7 @@ func (s *OrderService) PreviewChangePlan(userID, planID, planPriceID string) (*C
 	if !user.EmailVerified {
 		return nil, ErrEmailNotVerified
 	}
-	allowDisabled := user.CurrentProductID == planID && user.CurrentProductKind == model.OrderKindPlan
+	allowDisabled := user.CurrentProductID == planID
 	price, err := s.planSvc.loadPlanPrice(planID, planPriceID, allowDisabled)
 	if err != nil {
 		return nil, err
@@ -882,20 +877,11 @@ func (s *OrderService) PayMine(id, userID string) (*model.Order, *payment.PayDir
 		if perr != nil {
 			return nil, nil, perr
 		}
-		owner, oerr := s.ownsPlan(order.UserID, order.PlanID)
-		if oerr != nil {
-			return nil, nil, oerr
-		}
-		allowDisabled := owner && plan.AllowRenewOffShelf
-		price, perr := s.planSvc.loadPlanPrice(order.PlanID, order.PlanPriceID, allowDisabled)
-		if perr != nil {
-			return nil, nil, perr
-		}
-		plan, err := s.planSvc.Get(price.PlanID)
+		plan, err := s.planSvc.Get(order.PlanID)
 		if err != nil {
 			return nil, nil, err
 		}
-		subject, err = s.resolvePaymentSubject(model.OrderKindPlan, plan.Name, price.Period, order.Amount, plan.DisplayName)
+		subject, err = s.resolvePaymentSubject(model.OrderKindPlan, plan.Name, order.Period, order.Amount, plan.DisplayName)
 		if err != nil {
 			return nil, nil, err
 		}

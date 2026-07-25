@@ -92,9 +92,6 @@ func TestApplyPlanEffectReplacesNotAdds(t *testing.T) {
 	if got.UpTotal != 0 || got.DownTotal != 0 {
 		t.Errorf("used traffic not reset: up=%d down=%d, want 0/0 (new plan must start with full quota)", got.UpTotal, got.DownTotal)
 	}
-	if got.LastResetAt == nil {
-		t.Errorf("LastResetAt not stamped on plan purchase")
-	}
 	// Remaining = quota - used = 200 - 0 = 200 (fresh full quota).
 	if got.QuotaBytes-(got.UpTotal+got.DownTotal) != 200 {
 		t.Errorf("remaining = %d, want 200", got.QuotaBytes-(got.UpTotal+got.DownTotal))
@@ -104,17 +101,19 @@ func TestApplyPlanEffectReplacesNotAdds(t *testing.T) {
 func TestApplyTrafficEffectValidity(t *testing.T) {
 	db := testDB(t)
 
-	// Case 1: validity_days > 0 extends ExpireAt by that window.
+	// Case 1: a traffic package must NOT change the plan's access window —
+	// the bonus is permanent (no ExpireAt) and the user's ExpireAt is left
+	// untouched.
 	now := time.Now()
 	expire := now.Add(5 * 24 * time.Hour)
 	u1 := model.User{ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "sub-u1", Level: 2, ExpireAt: &expire, QuotaBytes: 0}
 	db.Create(&u1)
-	pkg := model.TrafficPackage{ID: "tp1", QuotaBytes: 500, ValidityDays: 7}
+	pkg := model.TrafficPackage{ID: "tp1", QuotaBytes: 500}
 
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var u model.User
 		tx.Where("id = ?", "u1").First(&u)
-		return applyTrafficEffect(tx, &u, &pkg, 7)
+		return applyTrafficEffect(tx, &u, &pkg)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -127,17 +126,17 @@ func TestApplyTrafficEffectValidity(t *testing.T) {
 	if got1.Level != 2 {
 		t.Errorf("Level changed for traffic purchase: %d, want 2", got1.Level)
 	}
-	if got1.ExpireAt == nil || !got1.ExpireAt.After(expire.Add(6*24*time.Hour)) {
-		t.Errorf("ExpireAt not extended by ~7 days: %v", got1.ExpireAt)
+	if got1.ExpireAt == nil || got1.ExpireAt.Sub(expire).Abs() > time.Minute {
+		t.Errorf("ExpireAt must NOT be extended by a traffic package (was %v, now %v)", expire, got1.ExpireAt)
 	}
 
-	// Case 2: validity_days == 0 adds quota but does NOT change ExpireAt.
+	// Case 2: a traffic package adds quota but does NOT change ExpireAt.
 	u2 := model.User{ID: "u2", Credential: "u2", Email: "u2@example.com", SubToken: "sub-u2", Level: 3, QuotaBytes: 0}
 	db.Create(&u2)
 	err = db.Transaction(func(tx *gorm.DB) error {
 		var u model.User
 		tx.Where("id = ?", "u2").First(&u)
-		return applyTrafficEffect(tx, &u, &pkg, 0)
+		return applyTrafficEffect(tx, &u, &pkg)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -151,45 +150,49 @@ func TestApplyTrafficEffectValidity(t *testing.T) {
 		t.Errorf("TrafficQuotaBytes = %d, want 500", got2.TrafficQuotaBytes)
 	}
 
-	// Case 3: buying a traffic package opts the user OUT of the global monthly
-	// reset (quota_reset_enabled = false), so the one-time package quota is
-	// never refreshed by ResetDueQuotas.
+	// Case 3: a traffic package is a bonus on top of the plan — it must NOT
+	// disable the plan's monthly reset (otherwise reset/change-plan break), and
+	// it must NOT wipe already-consumed usage. The one-time bonus lives in
+	// TrafficQuotaBytes (reclaimed by its grant on expiry), so the monthly
+	// ResetDueQuotas refreshes the base plan quota while the bonus persists.
 	u3 := model.User{ID: "u3", Credential: "u3", Email: "u3@example.com", SubToken: "sub-u3", Level: 3,
-		QuotaBytes: 0, QuotaResetEnabled: true, UpTotal: 10, DownTotal: 20}
+		QuotaBytes: 1 << 30, QuotaResetEnabled: true, UpTotal: 10, DownTotal: 20}
 	db.Create(&u3)
 	err = db.Transaction(func(tx *gorm.DB) error {
 		var u model.User
 		tx.Where("id = ?", "u3").First(&u)
-		return applyTrafficEffect(tx, &u, &pkg, 0)
+		return applyTrafficEffect(tx, &u, &pkg)
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var got3 model.User
 	db.Where("id = ?", "u3").First(&got3)
-	if got3.QuotaResetEnabled {
-		t.Errorf("QuotaResetEnabled = %v, want false (traffic purchase must opt out of monthly reset)", got3.QuotaResetEnabled)
+	if !got3.QuotaResetEnabled {
+		t.Errorf("QuotaResetEnabled = %v, want true (traffic purchase must not opt out of monthly reset)", got3.QuotaResetEnabled)
 	}
 	if got3.TrafficQuotaBytes != 500 {
 		t.Errorf("TrafficQuotaBytes = %d, want 500", got3.TrafficQuotaBytes)
 	}
-	// The already-consumed traffic must be preserved (only the reset flag, not
-	// the usage, is what we care about here).
 	if got3.UpTotal != 10 || got3.DownTotal != 20 {
 		t.Errorf("used traffic changed: up=%d down=%d, want 10/20", got3.UpTotal, got3.DownTotal)
 	}
-	// ResetDueQuotas must now skip this user (opted out).
+	// The plan still participates in the monthly reset: usage is zeroed but the
+	// bonus quota persists (it is reclaimed only when its grant expires).
 	n, err := NewUserService(db, nil).ResetDueQuotas()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Errorf("ResetDueQuotas reset %d users, want 0 (package buyer must not reset)", n)
+	if n < 1 {
+		t.Errorf("ResetDueQuotas reset %d users, want >= 1 (plan with bonus must reset)", n)
 	}
 	var after model.User
 	db.Where("id = ?", "u3").First(&after)
-	if after.UpTotal != 10 || after.DownTotal != 20 {
-		t.Errorf("after reset up=%d down=%d, want 10/20 (traffic must persist)", after.UpTotal, after.DownTotal)
+	if after.UpTotal != 0 || after.DownTotal != 0 {
+		t.Errorf("after reset up=%d down=%d, want 0/0", after.UpTotal, after.DownTotal)
+	}
+	if after.TrafficQuotaBytes != 500 {
+		t.Errorf("after reset TrafficQuotaBytes = %d, want 500 (bonus must persist)", after.TrafficQuotaBytes)
 	}
 }
 
@@ -222,9 +225,6 @@ func TestResetDueQuotasRespectsFlag(t *testing.T) {
 	if gotOn.UpTotal != 0 || gotOn.DownTotal != 0 {
 		t.Errorf("enabled user not reset: up=%d down=%d, want 0/0", gotOn.UpTotal, gotOn.DownTotal)
 	}
-	if gotOn.LastResetAt == nil {
-		t.Errorf("LastResetAt not stamped on reset")
-	}
 	if gotOff.UpTotal != 30 || gotOff.DownTotal != 40 {
 		t.Errorf("opted-out user wrongly reset: up=%d down=%d, want 30/40", gotOff.UpTotal, gotOff.DownTotal)
 	}
@@ -242,9 +242,9 @@ func TestPlanServiceNestedPrices(t *testing.T) {
 		Level:      3,
 		QuotaBytes: 1000,
 		Enabled:    true,
-		Prices: []model.PlanPrice{
-			{Period: model.PlanPeriodMonth, Price: 9900, DurationDays: 30, Enabled: true},
-			{Period: model.PlanPeriodYear, Price: 99000, DurationDays: 365, Enabled: true},
+		Prices: model.PlanPrices{
+			{Period: model.PlanPeriodMonth, Price: 9900, DurationDays: 30, Enabled: true, Sort: 0},
+			{Period: model.PlanPeriodYear, Price: 99000, DurationDays: 365, Enabled: true, Sort: 1},
 		},
 	}
 	if err := svc.Create(plan); err != nil {
@@ -265,7 +265,7 @@ func TestPlanServiceNestedPrices(t *testing.T) {
 
 	// Update: drop the monthly price, keep yearly, add quarterly.
 	reloaded.Name = "Pro v2"
-	reloaded.Prices = []model.PlanPrice{
+	reloaded.Prices = model.PlanPrices{
 		{Period: model.PlanPeriodYear, Price: 99000, DurationDays: 365, Enabled: true},
 		{Period: model.PlanPeriodQuarter, Price: 27000, DurationDays: 90, Enabled: true},
 	}
@@ -288,7 +288,7 @@ func TestPlanServicePersistsDisabledPrice(t *testing.T) {
 	plan := &model.Plan{
 		Name:    "DisableMe",
 		Enabled: true,
-		Prices: []model.PlanPrice{
+		Prices: model.PlanPrices{
 			{Period: model.PlanPeriodMonth, Price: 9900, DurationDays: 30, Enabled: true},
 			{Period: model.PlanPeriodYear, Price: 99000, DurationDays: 365, Enabled: false},
 		},
@@ -311,7 +311,7 @@ func TestPlanServicePersistsDisabledPrice(t *testing.T) {
 	}
 
 	// And via Update: re-create the same plan with the yearly price disabled.
-	reloaded.Prices = []model.PlanPrice{
+	reloaded.Prices = model.PlanPrices{
 		{Period: model.PlanPeriodMonth, Price: 9900, DurationDays: 30, Enabled: true},
 		{Period: model.PlanPeriodYear, Price: 99000, DurationDays: 365, Enabled: false},
 	}

@@ -34,7 +34,6 @@ func TestListAppendsOffShelfRenewablePlan(t *testing.T) {
 		Email:             "u1@example.com",
 		SubToken:          "sub-u1",
 		CurrentProductID:   "p1",
-		CurrentProductKind: model.OrderKindPlan,
 		ExpireAt:          &expire,
 	}
 	if err := db.Create(&user).Error; err != nil {
@@ -45,8 +44,8 @@ func TestListAppendsOffShelfRenewablePlan(t *testing.T) {
 		Name:               "Legacy",
 		Enabled:            false,
 		AllowRenewOffShelf: true,
-		Prices: []model.PlanPrice{
-			{ID: "pp1", Period: model.PlanPeriodMonth, Price: 990, DurationDays: 30, Enabled: true},
+		Prices: model.PlanPrices{
+			{Period: model.PlanPeriodMonth, Price: 990, DurationDays: 30, Enabled: true, Sort: 0},
 		},
 	}
 	if err := db.Create(&plan).Error; err != nil {
@@ -57,8 +56,8 @@ func TestListAppendsOffShelfRenewablePlan(t *testing.T) {
 		ID:      "p2",
 		Name:    "Current",
 		Enabled: true,
-		Prices: []model.PlanPrice{
-			{ID: "pp2", Period: model.PlanPeriodMonth, Price: 1990, DurationDays: 30, Enabled: true},
+		Prices: model.PlanPrices{
+			{Period: model.PlanPeriodMonth, Price: 1990, DurationDays: 30, Enabled: true, Sort: 0},
 		},
 	}
 	if err := db.Create(&onShelf).Error; err != nil {
@@ -96,7 +95,6 @@ func TestListHidesOffShelfPlanWhenRenewNotAllowed(t *testing.T) {
 		Email:             "u1@example.com",
 		SubToken:          "sub-u1",
 		CurrentProductID:   "p1",
-		CurrentProductKind: model.OrderKindPlan,
 		ExpireAt:          &expire,
 	}
 	if err := db.Create(&user).Error; err != nil {
@@ -107,8 +105,8 @@ func TestListHidesOffShelfPlanWhenRenewNotAllowed(t *testing.T) {
 		Name:               "Legacy",
 		Enabled:            false,
 		AllowRenewOffShelf: false, // not allowed
-		Prices: []model.PlanPrice{
-			{ID: "pp1", Period: model.PlanPeriodMonth, Price: 990, DurationDays: 30, Enabled: true},
+		Prices: model.PlanPrices{
+			{Period: model.PlanPeriodMonth, Price: 990, DurationDays: 30, Enabled: true, Sort: 0},
 		},
 	}
 	if err := db.Create(&plan).Error; err != nil {

@@ -5,7 +5,6 @@ package dto
 // PlanPriceInput is one billing-period price for a plan, submitted as part of
 // the plan create/update body.
 type PlanPriceInput struct {
-	ID           string `json:"id,omitempty"`              // present on update for existing rows
 	Period       string `json:"period" binding:"required"` // month|quarter|half_year|year
 	Price        int64  `json:"price" binding:"required"`  // cents
 	DurationDays int    `json:"duration_days"`             // optional; defaults from period
@@ -27,8 +26,6 @@ type PlanRequest struct {
 	SpeedLimitUpBps   int64            `json:"speed_limit_up_bps" binding:"gte=0"`
 	SpeedLimitDownBps int64            `json:"speed_limit_down_bps" binding:"gte=0"`
 	Enabled           *bool            `json:"enabled"`
-	ResetEnabled      bool             `json:"reset_enabled"` // plan-scoped traffic reset package
-	ResetPrice        int64            `json:"reset_price"`   // cents
 	// AllowRenewOffShelf lets the plan's current owner renew it even after the
 	// plan is disabled (off-shelf). Pointer so an omitted value preserves the
 	// existing flag on update.

@@ -10,7 +10,6 @@ type TrafficPackageRequest struct {
 	DisplayName  string `json:"display_name"`            // optional gateway product name; empty ⇒ template/default
 	Price        int64  `json:"price" binding:"required"` // cents
 	QuotaBytes   int64  `json:"quota_bytes" binding:"required"`
-	ValidityDays int    `json:"validity_days"` // 0 = no expiry extension
 	Description  string `json:"description"`
 	Enabled      *bool  `json:"enabled"`
 }

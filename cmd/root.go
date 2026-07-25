@@ -80,7 +80,6 @@ func run(cmd *cobra.Command) {
 		&model.RedemptionRecord{},
 		&model.Announcement{},
 		&model.Plan{},
-		&model.PlanPrice{},
 		&model.TrafficPackage{},
 		&model.TrafficGrant{},
 		&model.Order{},
@@ -200,27 +199,6 @@ func run(cmd *cobra.Command) {
 		}
 	}()
 
-	// Hourly reclaim of expired traffic-package grants: when a package's own
-	// validity lapses we subtract its bonus from the user's traffic_quota_bytes.
-	// Runs independently of the monthly quota reset (which only fires on the
-	// configured reset day).
-	go func() {
-		if n, err := userSvc.ReclaimExpiredTrafficGrants(); err != nil {
-			log.Errorf("reclaiming expired traffic grants: %v", err)
-		} else if n > 0 {
-			log.Infof("reclaimed %d expired traffic grants", n)
-		}
-		ticker := time.NewTicker(time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			if n, err := userSvc.ReclaimExpiredTrafficGrants(); err != nil {
-				log.Errorf("reclaiming expired traffic grants: %v", err)
-			} else if n > 0 {
-				log.Infof("reclaimed %d expired traffic grants", n)
-			}
-		}
-	}()
-
 	log.Infof("vgate manager listening on %s", srv.Addr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server error: %v", err)
@@ -266,8 +244,8 @@ func runQuotaReset(svc *service.UserService, sysCfg *service.SystemConfigService
 	}
 }
 
-// migrateQuotaResetDay, migrateUserCredential, migrateCurrentProductID and
-// migrateCurrentProductKind live in cmd/migrate.go.
+// migrateQuotaResetDay, migrateUserCredential and migrateCurrentProductID
+// live in cmd/migrate.go.
 
 func initDB(cfg *config.Config) (*gorm.DB, error) {
 	var dialector gorm.Dialector

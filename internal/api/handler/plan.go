@@ -8,7 +8,6 @@ import (
 	"github.com/vgate-project/vgate-manager/internal/api/dto"
 	"github.com/vgate-project/vgate-manager/internal/model"
 	"github.com/vgate-project/vgate-manager/internal/service"
-	"github.com/vgate-project/vgate-manager/internal/util"
 )
 
 type PlanHandler struct {
@@ -70,8 +69,6 @@ func (h *PlanHandler) Create(c *gin.Context) {
 	if req.Enabled != nil {
 		plan.Enabled = *req.Enabled
 	}
-	plan.ResetEnabled = req.ResetEnabled
-	plan.ResetPrice = req.ResetPrice
 	if req.AllowRenewOffShelf != nil {
 		plan.AllowRenewOffShelf = *req.AllowRenewOffShelf
 	}
@@ -103,8 +100,6 @@ func (h *PlanHandler) Update(c *gin.Context) {
 	if req.Enabled != nil {
 		plan.Enabled = *req.Enabled
 	}
-	plan.ResetEnabled = req.ResetEnabled
-	plan.ResetPrice = req.ResetPrice
 	if req.AllowRenewOffShelf != nil {
 		plan.AllowRenewOffShelf = *req.AllowRenewOffShelf
 	}
@@ -122,10 +117,11 @@ func (h *PlanHandler) Delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// toPlanPrices converts DTO price inputs into model rows, filling DurationDays
-// from the canonical period when omitted and defaulting Enabled to true.
-func toPlanPrices(in []dto.PlanPriceInput) []model.PlanPrice {
-	out := make([]model.PlanPrice, 0, len(in))
+// toPlanPrices converts DTO price inputs into PlanPriceEntry entries for
+// Plan.Prices JSON column. DurationDays is filled from the canonical period
+// when omitted; Enabled defaults to true.
+func toPlanPrices(in []dto.PlanPriceInput) model.PlanPrices {
+	out := make(model.PlanPrices, 0, len(in))
 	for _, p := range in {
 		enabled := true
 		if p.Enabled != nil {
@@ -135,12 +131,7 @@ func toPlanPrices(in []dto.PlanPriceInput) []model.PlanPrice {
 		if dur <= 0 {
 			dur = model.DefaultDurationForPeriod(p.Period)
 		}
-		id := p.ID
-		if id == "" {
-			id = util.NewPlanPriceID()
-		}
-		out = append(out, model.PlanPrice{
-			ID:           id,
+		out = append(out, model.PlanPriceEntry{
 			Period:       p.Period,
 			Price:        p.Price,
 			DurationDays: dur,

@@ -33,7 +33,7 @@ func (h *OrderHandler) Create(c *gin.Context) {
 	if writeErr(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind, Paid: order.Status == model.OrderStatusPaid})
+	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind, Paid: order.Status == model.OrderStatusPaid, WalletUsedCents: directive.WalletUsedCents, WalletRemainingCents: directive.WalletRemainingCents})
 }
 
 // ListMine lists the authenticated user's own orders.
@@ -61,7 +61,7 @@ func (h *OrderHandler) PayMine(c *gin.Context) {
 	if writeErr(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind, Paid: order.Status == model.OrderStatusPaid})
+	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind, Paid: order.Status == model.OrderStatusPaid, WalletUsedCents: directive.WalletUsedCents, WalletRemainingCents: directive.WalletRemainingCents})
 }
 
 // CloseMine lets the caller close their own pending order.
@@ -90,7 +90,7 @@ func (h *OrderHandler) AdminCreate(c *gin.Context) {
 	if writeErr(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind, Paid: order.Status == model.OrderStatusPaid})
+	c.JSON(http.StatusOK, dto.CreateOrderResponse{Order: order, PayURL: directive.URL, PayMode: directive.Kind, Paid: order.Status == model.OrderStatusPaid, WalletUsedCents: directive.WalletUsedCents, WalletRemainingCents: directive.WalletRemainingCents})
 }
 
 // List lists all orders (admin), with optional filtering/sorting applied

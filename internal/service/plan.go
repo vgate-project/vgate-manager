@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"sort"
 
 	"gorm.io/gorm"
 
@@ -24,17 +25,25 @@ func NewPlanService(db *gorm.DB) *PlanService {
 // can still renew it.
 func (s *PlanService) List(activeOnly bool, userID string) ([]model.Plan, error) {
 	var plans []model.Plan
-	q := s.db.Order("created_at ASC").Preload("Prices", func(tx *gorm.DB) *gorm.DB {
-		if activeOnly {
-			return tx.Where("enabled = ?", true).Order("sort ASC, created_at ASC")
-		}
-		return tx.Order("sort ASC, created_at ASC")
-	})
+	q := s.db.Order("created_at ASC")
 	if activeOnly {
 		q = q.Where("enabled = ?", true)
 	}
 	if err := q.Find(&plans).Error; err != nil {
 		return nil, err
+	}
+	// When activeOnly, filter Prices to enabled entries only.
+	if activeOnly {
+		for i := range plans {
+			var enabled model.PlanPrices
+			for _, pr := range plans[i].Prices {
+				if pr.Enabled {
+					enabled = append(enabled, pr)
+				}
+			}
+			sort.Slice(enabled, func(a, b int) bool { return enabled[a].Sort < enabled[b].Sort })
+			plans[i].Prices = enabled
+		}
 	}
 	if activeOnly && userID != "" {
 		if extra, ok := s.currentPlanForUser(userID, plans); ok {
@@ -54,7 +63,7 @@ func (s *PlanService) currentPlanForUser(userID string, existing []model.Plan) (
 	if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
 		return nil, false
 	}
-	if u.CurrentProductKind != model.OrderKindPlan || u.CurrentProductID == "" {
+	if u.CurrentProductID == "" {
 		return nil, false
 	}
 	for _, p := range existing {
@@ -66,7 +75,7 @@ func (s *PlanService) currentPlanForUser(userID string, existing []model.Plan) (
 	if err != nil || plan.Enabled || !plan.AllowRenewOffShelf {
 		return nil, false
 	}
-	enabled := make([]model.PlanPrice, 0, len(plan.Prices))
+	enabled := make(model.PlanPrices, 0, len(plan.Prices))
 	for _, pr := range plan.Prices {
 		if pr.Enabled {
 			enabled = append(enabled, pr)
@@ -81,7 +90,7 @@ func (s *PlanService) currentPlanForUser(userID string, existing []model.Plan) (
 
 func (s *PlanService) Get(id string) (*model.Plan, error) {
 	var plan model.Plan
-	if err := s.db.Preload("Prices").First(&plan, "id = ?", id).Error; err != nil {
+	if err := s.db.First(&plan, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &plan, nil
@@ -100,44 +109,53 @@ func (s *PlanService) loadEnabledPlan(id string) (*model.Plan, error) {
 	return plan, nil
 }
 
-// loadPlanPrice resolves the billing price for an order. When allowDisabled is
-// false the plan must be enabled — this is the legacy purchase gate that keeps
-// off-shelf plans out of the catalog. When allowDisabled is true (off-shelf
-// renewal), a disabled plan is accepted provided it still has at least one
-// enabled price; the requested price (or, when none is given, the first enabled
-// price) is returned.
-func (s *PlanService) loadPlanPrice(planID, priceID string, allowDisabled bool) (*model.PlanPrice, error) {
-	var plan model.Plan
-	if err := s.db.Preload("Prices", func(tx *gorm.DB) *gorm.DB {
-		return tx.Order("sort ASC, created_at ASC")
-	}).First(&plan, "id = ?", planID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("plan not found")
-		}
-		return nil, err
+// loadPlanPrice resolves a single pricing entry from the plan's JSON Prices
+// column. When period is empty it returns the first enabled entry (by Sort
+// order). When allowDisabled is false the plan itself must be enabled — this
+// is the catalog gate. When allowDisabled is true (off-shelf renewal) a
+// disabled plan is accepted provided the requested period is enabled.
+func (s *PlanService) loadPlanPrice(planID, period string, allowDisabled bool) (*model.PlanPriceEntry, error) {
+	plan, err := s.Get(planID)
+	if err != nil {
+		return nil, errors.New("plan not found")
 	}
 	if !plan.Enabled && !allowDisabled {
 		return nil, errors.New("plan is not available")
 	}
+	if period != "" {
+		for i := range plan.Prices {
+			if plan.Prices[i].Period == period && plan.Prices[i].Enabled {
+				return &plan.Prices[i], nil
+			}
+		}
+		return nil, errors.New("plan price is not available")
+	}
+	// No period requested: pick the first enabled price by sort order.
+	var best *model.PlanPriceEntry
+	var bestSort int
+	for i := range plan.Prices {
+		pr := &plan.Prices[i]
+		if !pr.Enabled {
+			continue
+		}
+		if best == nil || pr.Sort < bestSort {
+			best = pr
+			bestSort = pr.Sort
+		}
+	}
+	if best == nil {
+		return nil, errors.New("plan has no enabled prices")
+	}
+	return best, nil
+}
+
+// loadPlanPriceLegacy loads a PlanPrice row by its primary key from the
+// historical plan_prices table. Only used as a fallback for old orders whose
+// PlanPriceCents was not snapshotted.
+func (s *PlanService) loadPlanPriceLegacy(priceID string) (*model.PlanPrice, error) {
 	var price model.PlanPrice
-	if priceID != "" {
-		// A specific price was requested; resolve it and ensure it belongs to
-		// this plan and is enabled.
-		err := s.db.Where("id = ? AND plan_id = ? AND enabled = ?", priceID, plan.ID, true).
-			First(&price).Error
-		if err != nil {
-			return nil, errors.New("plan price is not available")
-		}
-	} else {
-		// No price requested (e.g. an admin order created with only a plan id):
-		// fall back to the first enabled price for the plan so creation still
-		// succeeds instead of failing on a missing price id.
-		err := s.db.Where("plan_id = ? AND enabled = ?", plan.ID, true).
-			Order("sort ASC, created_at ASC").
-			First(&price).Error
-		if err != nil {
-			return nil, errors.New("plan price is not available")
-		}
+	if err := s.db.First(&price, "id = ?", priceID).Error; err != nil {
+		return nil, err
 	}
 	return &price, nil
 }
@@ -146,44 +164,18 @@ func (s *PlanService) Create(p *model.Plan) error {
 	if p.ID == "" {
 		p.ID = util.NewPlanID()
 	}
-	for i := range p.Prices {
-		if p.Prices[i].ID == "" {
-			p.Prices[i].ID = util.NewPlanPriceID()
-		}
-		p.Prices[i].PlanID = p.ID
-	}
 	return s.db.Create(p).Error
 }
 
 func (s *PlanService) Update(p *model.Plan) error {
-	// Replace the price set atomically: delete existing prices for the plan,
-	// then re-create from p.Prices. This keeps the catalog in sync with the
-	// submitted price list without needing per-row upsert bookkeeping.
+	// Plan.Prices is a JSON column; a simple Save persists the new price array.
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("plan_id = ?", p.ID).Delete(&model.PlanPrice{}).Error; err != nil {
-			return err
-		}
-		prices := p.Prices
-		p.Prices = nil
 		if err := tx.Save(p).Error; err != nil {
 			return err
 		}
-		for i := range prices {
-			if prices[i].ID == "" {
-				prices[i].ID = util.NewPlanPriceID()
-			}
-			prices[i].PlanID = p.ID
-		}
-		if len(prices) > 0 {
-			if err := tx.Create(&prices).Error; err != nil {
-				return err
-			}
-		}
 		// Sync the new speed limits to every user currently on this plan.
-		// Full overwrite (including any manually-set limits) is the intended
-		// behavior: editing a plan's limit redefines the cap for its users.
 		if err := tx.Model(&model.User{}).
-			Where("current_product_id = ? AND current_product_kind = ?", p.ID, model.OrderKindPlan).
+			Where("current_product_id = ?", p.ID).
 			Updates(map[string]any{
 				"speed_limit_up_bps":   p.SpeedLimitUpBps,
 				"speed_limit_down_bps": p.SpeedLimitDownBps,

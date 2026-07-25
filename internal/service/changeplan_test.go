@@ -30,12 +30,11 @@ func changePlanTestDB(t *testing.T) *gorm.DB {
 // ids.
 func seedPlan(t *testing.T, db *gorm.DB, planID, priceID string, priceCents int64, durationDays int, level int) {
 	t.Helper()
-	plan := model.Plan{ID: planID, Name: planID, Level: level, QuotaBytes: 1 << 30, Enabled: true}
-	price := model.PlanPrice{ID: priceID, PlanID: planID, Period: model.PlanPeriodMonth, Price: priceCents, DurationDays: durationDays, Enabled: true}
-	if err := db.Create(&plan).Error; err != nil {
-		t.Fatal(err)
+	plan := model.Plan{
+		ID: planID, Name: planID, Level: level, QuotaBytes: 1 << 30, Enabled: true,
+		Prices: model.PlanPrices{{Period: model.PlanPeriodMonth, Price: priceCents, DurationDays: durationDays, Enabled: true}},
 	}
-	if err := db.Create(&price).Error; err != nil {
+	if err := db.Create(&plan).Error; err != nil {
 		t.Fatal(err)
 	}
 }
@@ -50,22 +49,22 @@ func TestComputeRemainingValue(t *testing.T) {
 	}{
 		{
 			name: "halfway through a 30-day 3000-cent plan",
-			user: model.User{CurrentProductKind: model.OrderKindPlan, ExpireAt: halfExpired, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30},
+			user: model.User{CurrentProductID: "p1", ExpireAt: halfExpired, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30},
 			want: 1500,
 		},
 		{
 			name: "expired plan yields zero",
-			user: model.User{CurrentProductKind: model.OrderKindPlan, ExpireAt: new(now.Add(-1 * time.Hour)), CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30},
+			user: model.User{CurrentProductID: "p1", ExpireAt: new(now.Add(-1 * time.Hour)), CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30},
 			want: 0,
 		},
 		{
-			name: "traffic-package current product yields zero",
-			user: model.User{CurrentProductKind: model.OrderKindTraffic, ExpireAt: halfExpired, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30},
+			name: "no current plan yields zero",
+			user: model.User{CurrentProductID: "", ExpireAt: halfExpired, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30},
 			want: 0,
 		},
 		{
 			name: "no recorded paid amount yields zero",
-			user: model.User{CurrentProductKind: model.OrderKindPlan, ExpireAt: halfExpired, CurrentPlanPaidCents: 0, CurrentPlanDurationDays: 30},
+			user: model.User{CurrentProductID: "p1", ExpireAt: halfExpired, CurrentPlanPaidCents: 0, CurrentPlanDurationDays: 30},
 			want: 0,
 		},
 	}
@@ -89,8 +88,7 @@ func TestChangePlanUpgradeImmediate(t *testing.T) {
 	expire := time.Now().Add(10 * 24 * time.Hour)
 	user := model.User{
 		ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
-		EmailVerified: true, CurrentProductID: "p1", CurrentProductKind: model.OrderKindPlan,
-		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
+		EmailVerified: true, CurrentProductID: "p1", 		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
 		BalanceCents: 5000,
 	}
 	if err := db.Create(&user).Error; err != nil {
@@ -98,7 +96,7 @@ func TestChangePlanUpgradeImmediate(t *testing.T) {
 	}
 
 	svc := NewOrderService(db, NewSystemConfigService(db), nil, NewBalanceService(db))
-	res, err := svc.ChangePlan("u1", "p2", "pp2", "")
+	res, err := svc.ChangePlan("u1", "p2", model.PlanPeriodMonth, "")
 	if err != nil {
 		t.Fatalf("ChangePlan: %v", err)
 	}
@@ -154,8 +152,7 @@ func TestChangePlanDowngradeImmediateRefunds(t *testing.T) {
 	expire := time.Now().Add(10 * 24 * time.Hour)
 	user := model.User{
 		ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
-		EmailVerified: true, CurrentProductID: "p1", CurrentProductKind: model.OrderKindPlan,
-		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
+		EmailVerified: true, CurrentProductID: "p1", 		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
 		BalanceCents: 0,
 	}
 	if err := db.Create(&user).Error; err != nil {
@@ -163,7 +160,7 @@ func TestChangePlanDowngradeImmediateRefunds(t *testing.T) {
 	}
 
 	svc := NewOrderService(db, NewSystemConfigService(db), nil, NewBalanceService(db))
-	res, err := svc.ChangePlan("u1", "p2", "pp2", "")
+	res, err := svc.ChangePlan("u1", "p2", model.PlanPeriodMonth, "")
 	if err != nil {
 		t.Fatalf("ChangePlan: %v", err)
 	}
@@ -215,8 +212,7 @@ func TestChangePlanSwitchNoBalanceInflation(t *testing.T) {
 	expire := time.Now().Add(10 * 24 * time.Hour)
 	user := model.User{
 		ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
-		EmailVerified: true, CurrentProductID: "p1", CurrentProductKind: model.OrderKindPlan,
-		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
+		EmailVerified: true, CurrentProductID: "p1", 		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
 		BalanceCents: 0,
 	}
 	if err := db.Create(&user).Error; err != nil {
@@ -224,7 +220,7 @@ func TestChangePlanSwitchNoBalanceInflation(t *testing.T) {
 	}
 
 	svc := NewOrderService(db, NewSystemConfigService(db), nil, NewBalanceService(db))
-	res, err := svc.ChangePlan("u1", "p2", "pp2", "")
+	res, err := svc.ChangePlan("u1", "p2", model.PlanPeriodMonth, "")
 	if err != nil {
 		t.Fatalf("ChangePlan: %v", err)
 	}
@@ -258,8 +254,7 @@ func TestPreviewChangePlan(t *testing.T) {
 	expire := time.Now().Add(10 * 24 * time.Hour)
 	user := model.User{
 		ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
-		EmailVerified: true, CurrentProductID: "p1", CurrentProductKind: model.OrderKindPlan,
-		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
+		EmailVerified: true, CurrentProductID: "p1", 		ExpireAt: &expire, CurrentPlanPaidCents: 3000, CurrentPlanDurationDays: 30,
 		BalanceCents: 5000,
 	}
 	if err := db.Create(&user).Error; err != nil {
@@ -267,7 +262,7 @@ func TestPreviewChangePlan(t *testing.T) {
 	}
 
 	svc := NewOrderService(db, NewSystemConfigService(db), nil, NewBalanceService(db))
-	res, err := svc.PreviewChangePlan("u1", "p2", "pp2")
+	res, err := svc.PreviewChangePlan("u1", "p2", model.PlanPeriodMonth)
 	if err != nil {
 		t.Fatalf("PreviewChangePlan: %v", err)
 	}
@@ -313,7 +308,7 @@ func TestCreateDeductsWalletFully(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewOrderService(db, NewSystemConfigService(db), nil, NewBalanceService(db))
-	order, _, err := svc.Create("u1", CreateOrderParams{Kind: model.OrderKindPlan, PlanID: "p1", PlanPriceID: "pp1"})
+	order, _, err := svc.Create("u1", CreateOrderParams{Kind: model.OrderKindPlan, PlanID: "p1", PlanPriceID: "month"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -325,7 +320,7 @@ func TestCreateDeductsWalletFully(t *testing.T) {
 	if got.BalanceCents != 0 {
 		t.Errorf("BalanceCents = %d, want 0", got.BalanceCents)
 	}
-	if got.CurrentProductKind != model.OrderKindPlan {
-		t.Errorf("plan not applied; CurrentProductKind=%s", got.CurrentProductKind)
+	if got.CurrentProductID != "p1" {
+		t.Errorf("plan not applied; CurrentProductID=%s, want p1", got.CurrentProductID)
 	}
 }

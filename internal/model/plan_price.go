@@ -1,6 +1,11 @@
 package model
 
-import "time"
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"time"
+)
 
 // Billing periods offered for a plan. The integer suffix maps to DurationDays.
 const (
@@ -29,10 +34,51 @@ func DefaultDurationForPeriod(period string) int {
 	}
 }
 
-// PlanPrice is one billing-period price point for a Plan. A plan may have
-// several (e.g. monthly + yearly), each with its own server-authoritative
-// Price (cents) and DurationDays. The amount used when creating an order is
-// copied from here; clients cannot override it.
+// PlanPriceEntry is a billing-period price point that lives as a JSON array
+// element inside Plan.Prices (replacing the separate plan_prices table).
+// It has no database identity of its own — prices are identified by Period
+// within a plan.
+type PlanPriceEntry struct {
+	Period       string `json:"period"`        // month|quarter|half_year|year
+	Price        int64  `json:"price"`         // cents
+	DurationDays int    `json:"duration_days"` // 30|90|180|365
+	Sort         int    `json:"sort"`
+	Enabled      bool   `json:"enabled"`
+}
+
+// PlanPrices is a JSON column containing a plan's pricing options. It
+// implements driver.Valuer / sql.Scanner so GORM can serialize it to a
+// single JSON column on the plans table.
+type PlanPrices []PlanPriceEntry
+
+func (p *PlanPrices) Scan(value any) error {
+	if value == nil {
+		*p = nil
+		return nil
+	}
+	bytes, ok := value.([]byte)
+	if !ok {
+		str, ok := value.(string)
+		if !ok {
+			return errors.New("unsupported Scan value for PlanPrices")
+		}
+		bytes = []byte(str)
+	}
+	return json.Unmarshal(bytes, p)
+}
+
+func (p PlanPrices) Value() (driver.Value, error) {
+	if len(p) == 0 {
+		return "[]", nil
+	}
+	b, err := json.Marshal(p)
+	return string(b), err
+}
+
+// PlanPrice is the legacy table-backed billing-period price point. It is
+// retained only so historical plan_prices rows (referenced by old Orders)
+// remain readable. New plans store pricing in Plan.Prices (of type PlanPrices
+// / PlanPriceEntry) as a JSON column.
 type PlanPrice struct {
 	ID           string    `gorm:"primaryKey;size:36" json:"id"`
 	PlanID       string    `gorm:"index;size:36;not null" json:"plan_id"`

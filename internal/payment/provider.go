@@ -21,6 +21,12 @@ type PayDirective struct {
 	// URL is the browser redirect URL when Kind="redirect", or the QR code
 	// content (e.g. an alipay qr_code or wechat code_url) when Kind="qr".
 	URL string
+	// WalletUsedCents is the amount of the order the user's wallet balance
+	// covered (0 when the wallet was not used). WalletRemainingCents is the
+	// wallet balance left after that debit. Both are populated even when a
+	// gateway step still follows, so the client can show "paid X from wallet".
+	WalletUsedCents      int64 `json:"wallet_used_cents"`
+	WalletRemainingCents int64 `json:"wallet_remaining_cents"`
 }
 
 // Provider abstracts a single payment gateway. Adding a new platform means

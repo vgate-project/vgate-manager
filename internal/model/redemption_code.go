@@ -14,9 +14,6 @@ const (
 	// RedeemTypePlan applies the plan identified by PlanID as a free
 	// subscription (sets quota/level/expiry like a paid plan order).
 	RedeemTypePlan = "plan"
-	// RedeemTypeReset zeroes the user's used traffic counters (a traffic
-	// reset package), leaving quota/level/expiry untouched.
-	RedeemTypeReset = "reset"
 )
 
 // RedemptionCode is an admin-issued token that grants a benefit when redeemed
@@ -26,7 +23,7 @@ const (
 type RedemptionCode struct {
 	ID        string     `gorm:"primaryKey;size:36" json:"id"`
 	Code      string     `gorm:"uniqueIndex;size:64" json:"code"`
-	Type      string     `gorm:"size:16;index" json:"type"` // traffic|duration|plan|reset
+	Type      string     `gorm:"size:16;index" json:"type"` // traffic|duration|plan
 	MaxUses   int        `gorm:"default:1" json:"max_uses"`
 	UsedCount int        `gorm:"default:0" json:"used_count"`
 	ExpiresAt *time.Time `gorm:"index" json:"expires_at,omitempty"`

@@ -26,15 +26,12 @@ const (
 	OrderKindPlan = "plan"
 	// OrderKindTraffic is a one-time traffic add-on purchase.
 	OrderKindTraffic = "traffic"
-	// OrderKindReset is a plan-scoped traffic reset: zeroes the user's used
-	// traffic (up_total/down_total) without changing quota/level/expiry.
-	OrderKindReset = "reset"
 )
 
 // Order records a single alipay purchase attempt. It is kind-aware:
 //   - kind=plan:    references PlanID + PlanPriceID; carries the chosen
 //     Period/DurationDays (copied from the price at creation).
-//   - kind=traffic: references TrafficPackageID; carries ValidityDays.
+//   - kind=traffic: references TrafficPackageID.
 //
 // Amount is copied from the authoritative source (plan price or traffic
 // package) at creation time; clients cannot override it.
@@ -47,8 +44,8 @@ type Order struct {
 	Period           string `gorm:"size:16" json:"period,omitempty"`
 	DurationDays     int    `gorm:"default:0" json:"duration_days"`
 	TrafficPackageID string `gorm:"index;size:36" json:"traffic_package_id,omitempty"`
-	ValidityDays     int    `gorm:"default:0" json:"validity_days"`
-	Amount           int64  `gorm:"not null" json:"amount"` // cents, copied from source
+	Amount           int64  `gorm:"not null" json:"amount"` // cents, copied from source; may be reduced by wallet deduction
+	PlanPriceCents   int64  `gorm:"not null;default:0" json:"plan_price_cents,omitempty"` // gross plan-price cents before any wallet deduction; used for proration credit
 	Status           string `gorm:"index;size:16;not null;default:'pending'" json:"status"`
 	Platform         string `gorm:"index;size:16" json:"platform"` // payment gateway: alipay | manual | balance | (future)
 	// ExtendFromOldExpiry controls how applyPlanEffect computes the new

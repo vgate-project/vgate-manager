@@ -12,27 +12,18 @@ type User struct {
 	// embedded in the subscription link. It is decoupled from ID so a leaked
 	// credential can be regenerated without touching the primary key.
 	Credential string `gorm:"uniqueIndex;size:36" json:"credential"`
-	// CurrentProductID is the id of the currently active product applied to the
-	// user — a plan id (from a paid plan order) or a traffic-package id (from a
-	// paid traffic order). Set when the order effect is applied; nullable; not
-	// cleared on expiry.
+	// CurrentProductID is the id of the user's currently active plan, set when
+	// a paid plan order's effect is applied. Traffic packages are add-ons and
+	// never become the current product, so this is always a plan id or empty;
+	// nullable and not cleared on expiry.
 	CurrentProductID string `gorm:"size:36;index" json:"current_product_id,omitempty"`
 	// CurrentProductName is the display name of CurrentProductID, populated by
 	// the service layer (not stored). Empty when no active product or the
 	// product no longer exists.
 	CurrentProductName string `gorm:"-" json:"current_product_name,omitempty"`
-	// CurrentProductKind is the kind of CurrentProductID ("plan" | "traffic"),
-	// persisted when the subscription effect is applied (applyPlanEffect /
-	// applyTrafficEffect). Empty when no active product.
-	CurrentProductKind string `gorm:"size:16;default:''" json:"current_product_kind,omitempty"`
-	// CurrentPlanResetEnabled / CurrentPlanResetPrice surface the reset package
-	// of the user's currently active plan. Populated by UserService.Get; empty
-	// when the active product is a traffic package or none. Not stored.
-	CurrentPlanResetEnabled bool    `gorm:"-" json:"current_plan_reset_enabled,omitempty"`
-	CurrentPlanResetPrice   int64   `gorm:"-" json:"current_plan_reset_price,omitempty"`
-	Email                   string  `gorm:"uniqueIndex;size:255;not null" json:"email"`
-	Username                *string `gorm:"uniqueIndex;size:64" json:"username,omitempty"`
-	PasswordHash            *string `gorm:"size:128" json:"-"` // bcrypt, nullable
+	Email              string `gorm:"uniqueIndex;size:255;not null" json:"email"`
+	Username           *string `gorm:"uniqueIndex;size:64" json:"username,omitempty"`
+	PasswordHash       *string `gorm:"size:128" json:"-"` // bcrypt, nullable
 	// HasPassword is a derived flag (not stored) exposing whether the user has
 	// a password set, so the client can decide whether to prompt for the
 	// current password when changing it.
@@ -40,19 +31,28 @@ type User struct {
 	SubToken          string     `gorm:"uniqueIndex;size:32;not null" json:"sub_token"` // crypto-random share-URL credential
 	Level             int        `gorm:"default:0" json:"level"`
 	ExpireAt          *time.Time `gorm:"index" json:"expire_at,omitempty"`
-	QuotaBytes        int64      `gorm:"default:0" json:"quota_bytes"`             // base traffic cap in bytes: -1 = unlimited, 0 = no quota (blocked), >0 = capped. Set by plans; traffic-package/redemption bonuses live in TrafficQuotaBytes.
-	TrafficQuotaBytes int64      `gorm:"default:0" json:"traffic_quota_bytes"`     // sum of active (non-expired) traffic-package / redemption bonuses, reclaimed on expiry
-	QuotaResetEnabled bool       `gorm:"default:false" json:"quota_reset_enabled"` // participates in global monthly reset (reset day from system_config)
+	QuotaBytes        int64      `gorm:"default:0" json:"quota_bytes"`         // base traffic cap in bytes: -1 = unlimited, 0 = no quota (blocked), >0 = capped. Set by plans; traffic-package/redemption bonuses live in TrafficQuotaBytes.
+	TrafficQuotaBytes int64      `gorm:"default:0" json:"traffic_quota_bytes"` // sum of active (non-expired) traffic-package / redemption bonuses, reclaimed on expiry
+	// PackageUsedBytes is the cumulative traffic (bytes) charged to
+	// traffic-package / redemption grants (FIFO). It persists across base-quota
+	// resets (monthly, manual, or plan renewal) so a reset renews the base
+	// window without refunding package traffic already consumed. The remaining
+	// package pool is TrafficQuotaBytes; per-grant remaining is on TrafficGrant.
+	PackageUsedBytes int64 `gorm:"default:0" json:"package_used_bytes"`
+	// TrafficGrants lists the user's active (non-reclaimed) grants, populated
+	// by UserService.Get for the profile / admin detail responses. Not stored.
+	TrafficGrants     []TrafficGrant `gorm:"-" json:"traffic_grants,omitempty"`
+	QuotaResetEnabled bool           `gorm:"default:false" json:"quota_reset_enabled"` // participates in global monthly reset (reset day from system_config)
 	// BalanceCents is the user's spendable account-balance wallet (cents). It
-	// can pay for any purchase (plans, traffic packages, resets) and is credited
+	// can pay for any purchase (plans, traffic packages) and is credited
 	// when a plan change refunds the remaining value of the old plan.
 	BalanceCents int64 `gorm:"default:0" json:"balance_cents"`
 	// CurrentPlanPaidCents / CurrentPlanDurationDays record what the user paid
 	// for the CURRENT plan entitlement (gross cents + the duration of that
 	// purchase). They enable per-day amortization so a mid-period plan change
-	// can credit the old plan's remaining value. Only meaningful when
-	// CurrentProductKind == "plan". Exposed so the change-plan dialog can
-	// preview the credit client-side.
+	// can credit the old plan's remaining value. Only meaningful when the user
+	// has a current plan (CurrentProductID is set). Exposed so the change-plan
+	// dialog can preview the credit client-side.
 	CurrentPlanPaidCents    int64 `gorm:"default:0" json:"current_plan_paid_cents"`
 	CurrentPlanDurationDays int   `gorm:"default:0" json:"current_plan_duration_days"`
 	// SpeedLimitUpBps / SpeedLimitDownBps cap this user's upload / download
@@ -63,7 +63,6 @@ type User struct {
 	UpTotal           int64      `gorm:"default:0" json:"up_total"`
 	DownTotal         int64      `gorm:"default:0" json:"down_total"`
 	LastTrafficAt     *time.Time `gorm:"index" json:"last_traffic_at,omitempty"` // last node-reported traffic delta
-	LastResetAt       *time.Time `json:"last_reset_at,omitempty"`
 	Enabled           bool       `gorm:"default:true" json:"enabled"`
 	// EmailVerified is set true once the user proves ownership of Email (e.g.
 	// via the registration verification link). Surfaced to admins so pending
@@ -106,4 +105,15 @@ func (u User) EffectiveQuotaBytes() int64 {
 		return -1
 	}
 	return u.QuotaBytes + u.TrafficQuotaBytes
+}
+
+// BaseUsedBytes returns the traffic charged against the base plan quota only
+// (total used minus the package-used portion). Floored at 0. The package-used
+// portion survives base resets, so this isolates the base window's consumption.
+func (u User) BaseUsedBytes() int64 {
+	used := u.UpTotal + u.DownTotal - u.PackageUsedBytes
+	if used < 0 {
+		return 0
+	}
+	return used
 }

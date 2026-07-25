@@ -18,7 +18,7 @@ func trafficTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.User{}, &model.Node{}, &model.TrafficHourlyStat{}, &model.UserNodeTraffic{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Node{}, &model.TrafficHourlyStat{}, &model.UserNodeTraffic{}, &model.TrafficGrant{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return db

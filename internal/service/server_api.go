@@ -171,12 +171,62 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 				}
 				return fmt.Errorf("lookup user %s: %w", d.Email, err)
 			}
-			// Cumulative per-user totals.
+
+			// Package-first deduction: charge traffic to the user's active
+			// grants (FIFO by GrantedAt) before the base plan quota. The grants'
+			// used_bytes and the user's package_used_bytes absorb the package
+			// portion; anything beyond the total grant capacity stays as base
+			// usage (handled by the up_total/down_total increment below).
+			delta := up + down
+			pkgConsumed := int64(0)
+			if delta > 0 {
+			var grants []model.TrafficGrant
+			if err := tx.Where("user_id = ?", user.ID).
+				Order("granted_at ASC").
+				Find(&grants).Error; err != nil {
+				return fmt.Errorf("load traffic grants for %s: %w", user.ID, err)
+			}
+				room := int64(0)
+				for i := range grants {
+					room += grants[i].RemainingBytes()
+				}
+				consume := delta
+				if consume > room {
+					consume = room
+				}
+				if consume > 0 {
+					remaining := consume
+					for i := range grants {
+						if remaining <= 0 {
+							break
+						}
+						take := grants[i].RemainingBytes()
+						if take > remaining {
+							take = remaining
+						}
+						if take > 0 {
+							if err := tx.Model(&model.TrafficGrant{}).
+								Where("id = ?", grants[i].ID).
+								Update("used_bytes", gorm.Expr("used_bytes + ?", take)).Error; err != nil {
+								return fmt.Errorf("update grant used for %s: %w", grants[i].ID, err)
+							}
+							remaining -= take
+						}
+					}
+					pkgConsumed = consume - remaining
+				}
+			}
+
+			// Cumulative per-user totals. up_total/down_total track the global
+			// combined usage (base + package) for the node cap and display;
+			// package_used_bytes tracks only the package portion so a base
+			// reset can preserve it.
 			if err := tx.Model(&model.User{}).Where("id = ?", user.ID).
 				Updates(map[string]any{
-					"up_total":        gorm.Expr("up_total + ?", up),
-					"down_total":      gorm.Expr("down_total + ?", down),
-					"last_traffic_at": now,
+					"up_total":          gorm.Expr("up_total + ?", up),
+					"down_total":        gorm.Expr("down_total + ?", down),
+					"package_used_bytes": gorm.Expr("package_used_bytes + ?", pkgConsumed),
+					"last_traffic_at":   now,
 				}).Error; err != nil {
 				return fmt.Errorf("update user traffic: %w", err)
 			}

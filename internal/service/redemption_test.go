@@ -145,7 +145,7 @@ func TestRedemptionPlan(t *testing.T) {
 		QuotaBytes: 5 << 30,
 		Level:      2,
 		Enabled:    true,
-		Prices:     []model.PlanPrice{{ID: util.NewPlanPriceID(), Period: "month", DurationDays: 30, Price: 100, Enabled: true}},
+		Prices:     model.PlanPrices{{Period: "month", DurationDays: 30, Price: 100, Enabled: true, Sort: 0}},
 	}
 	if err := db.Create(plan).Error; err != nil {
 		t.Fatalf("create plan: %v", err)
@@ -171,37 +171,13 @@ func TestRedemptionPlan(t *testing.T) {
 	}
 }
 
-func TestRedemptionReset(t *testing.T) {
-	db := newRedemptionTestDB(t)
-	svc := NewRedemptionService(db)
-	userID := mustRedeemUser(t, db)
-
-	var u model.User
-	db.First(&u, "id = ?", userID)
-	u.UpTotal = 100
-	u.DownTotal = 200
-	db.Save(&u)
-
-	codes, err := svc.BatchGenerate(1, dto.AdminGenerateRedemptionRequest{Type: model.RedeemTypeReset, MaxUses: 1, Count: 1})
-	if err != nil {
-		t.Fatalf("BatchGenerate: %v", err)
-	}
-	if _, _, err := svc.Redeem(userID, codes[0].Code); err != nil {
-		t.Fatalf("Redeem: %v", err)
-	}
-	db.First(&u, "id = ?", userID)
-	if u.UpTotal != 0 || u.DownTotal != 0 {
-		t.Errorf("expected counters zeroed, got up=%d down=%d", u.UpTotal, u.DownTotal)
-	}
-}
-
 func TestRedemptionExhaustedAndExpired(t *testing.T) {
 	db := newRedemptionTestDB(t)
 	svc := NewRedemptionService(db)
 	userID := mustRedeemUser(t, db)
 
 	// Exhausted: max_uses=1 already consumed by another user.
-	codes, err := svc.BatchGenerate(1, dto.AdminGenerateRedemptionRequest{Type: model.RedeemTypeReset, MaxUses: 1, Count: 1})
+	codes, err := svc.BatchGenerate(1, dto.AdminGenerateRedemptionRequest{Type: model.RedeemTypeTraffic, MaxUses: 1, Count: 1, QuotaBytes: 1 << 30})
 	if err != nil {
 		t.Fatalf("BatchGenerate: %v", err)
 	}
@@ -214,7 +190,7 @@ func TestRedemptionExhaustedAndExpired(t *testing.T) {
 	}
 
 	// Expired.
-	exp, err := svc.BatchGenerate(1, dto.AdminGenerateRedemptionRequest{Type: model.RedeemTypeReset, MaxUses: 1, Count: 1, ExpiresAt: new(time.Now().Add(-time.Hour))})
+	exp, err := svc.BatchGenerate(1, dto.AdminGenerateRedemptionRequest{Type: model.RedeemTypeTraffic, MaxUses: 1, Count: 1, QuotaBytes: 1 << 30, ExpiresAt: new(time.Now().Add(-time.Hour))})
 	if err != nil {
 		t.Fatalf("BatchGenerate expired: %v", err)
 	}

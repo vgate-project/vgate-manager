@@ -29,6 +29,12 @@ type CreateOrderResponse struct {
 	PayURL  string       `json:"pay_url"`
 	PayMode string       `json:"pay_mode"` // "redirect" | "qr" — how to present PayURL to the user
 	Paid    bool         `json:"paid"`     // true when fully covered by the wallet (no gateway step)
+	// Wallet fields: the amount of this order the wallet balance covered, and
+	// the balance remaining after that debit. Populated whenever the wallet is
+	// used (0 for a pure gateway payment) so the client can prompt the user
+	// that the wallet auto-paid instead of the gateway they selected.
+	WalletUsedCents      int64 `json:"wallet_used_cents"`
+	WalletRemainingCents int64 `json:"wallet_remaining_cents"`
 }
 
 // ChangePlanRequest is the body for POST /user/change-plan.

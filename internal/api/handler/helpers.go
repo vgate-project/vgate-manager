@@ -26,6 +26,8 @@ func writeErr(c *gin.Context, err error) bool {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, service.ErrEmailNotVerified):
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+	case errors.Is(err, service.ErrNoActivePlan):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case isValidationErr(err):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case isUniqueViolation(err):

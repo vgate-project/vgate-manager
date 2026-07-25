@@ -53,12 +53,11 @@ func (h *TrafficPackageHandler) Create(c *gin.Context) {
 		return
 	}
 	pkg := &model.TrafficPackage{
-		Name:         req.Name,
-		DisplayName:  req.DisplayName,
-		Price:        req.Price,
-		QuotaBytes:   req.QuotaBytes,
-		ValidityDays: req.ValidityDays,
-		Description:  req.Description,
+		Name:        req.Name,
+		DisplayName: req.DisplayName,
+		Price:       req.Price,
+		QuotaBytes:  req.QuotaBytes,
+		Description: req.Description,
 	}
 	pkg.Enabled = true
 	if req.Enabled != nil {
@@ -85,7 +84,6 @@ func (h *TrafficPackageHandler) Update(c *gin.Context) {
 	pkg.DisplayName = req.DisplayName
 	pkg.Price = req.Price
 	pkg.QuotaBytes = req.QuotaBytes
-	pkg.ValidityDays = req.ValidityDays
 	pkg.Description = req.Description
 	if req.Enabled != nil {
 		pkg.Enabled = *req.Enabled

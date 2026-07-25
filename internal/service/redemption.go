@@ -38,7 +38,7 @@ func NewRedemptionService(db *gorm.DB) *RedemptionService {
 // validType reports whether t is a known redemption type.
 func validRedeemType(t string) bool {
 	switch t {
-	case model.RedeemTypeTraffic, model.RedeemTypeDuration, model.RedeemTypePlan, model.RedeemTypeReset:
+	case model.RedeemTypeTraffic, model.RedeemTypeDuration, model.RedeemTypePlan:
 		return true
 	}
 	return false
@@ -248,16 +248,15 @@ func (s *RedemptionService) applyBenefit(tx *gorm.DB, user *model.User, code *mo
 			return "", err
 		}
 		// A redeemed traffic code has no independent expiry: the bonus is
-		// permanent until the user is deleted (ExpireAt left nil), so it is
-		// never auto-reclaimed.
+		// permanent until the user is deleted, so it is never auto-reclaimed.
 		grant := &model.TrafficGrant{
 			ID:         util.NewNodeID(),
 			UserID:     user.ID,
 			Source:     model.GrantSourceRedemption,
 			SourceID:   code.ID,
+			Name:       code.Code,
 			QuotaBytes: code.QuotaBytes,
 			GrantedAt:  now,
-			ExpireAt:   nil,
 		}
 		if err := tx.Create(grant).Error; err != nil {
 			return "", err
@@ -288,15 +287,6 @@ func (s *RedemptionService) applyBenefit(tx *gorm.DB, user *model.User, code *mo
 			return "", err
 		}
 		return fmt.Sprintf("applied plan %q (%d days)", plan.Name, duration), nil
-
-	case model.RedeemTypeReset:
-		user.UpTotal = 0
-		user.DownTotal = 0
-		user.LastResetAt = &now
-		if err := tx.Save(user).Error; err != nil {
-			return "", err
-		}
-		return "reset traffic usage", nil
 	}
 	return "", ErrInvalidRedeemType
 }

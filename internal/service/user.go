@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -82,26 +83,25 @@ func (s *UserService) Get(id string) (*model.User, error) {
 	if err := s.db.First(&user, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
-	// The active product's kind is persisted on the user when its subscription
-	// effect is applied; use it to resolve the display name and, for plans, the
-	// traffic-reset package. No ambiguous plan→package fallback needed.
+	// The active product is always a plan (traffic packages are add-ons and
+	// never become the current product), so resolve the display name from the
+	// plan pointer directly.
 	if user.CurrentProductID != "" {
-		switch user.CurrentProductKind {
-		case model.OrderKindPlan:
-			var plan model.Plan
-			if err := s.db.First(&plan, "id = ?", user.CurrentProductID).Error; err == nil {
-				user.CurrentProductName = plan.Name
-				user.CurrentPlanResetEnabled = plan.ResetEnabled
-				user.CurrentPlanResetPrice = plan.ResetPrice
-			}
-		case model.OrderKindTraffic:
-			var pkg model.TrafficPackage
-			if err := s.db.First(&pkg, "id = ?", user.CurrentProductID).Error; err == nil {
-				user.CurrentProductName = pkg.Name
-			}
+		var plan model.Plan
+		if err := s.db.First(&plan, "id = ?", user.CurrentProductID).Error; err == nil {
+			user.CurrentProductName = plan.Name
 		}
 	}
 	s.setDerivedFlags(&user)
+	// Load the user's traffic grants so the profile / admin detail responses
+	// can show each package's remaining traffic. Grants are permanent and
+	// ordered FIFO by grant time, which is also the consumption order.
+	if err := s.db.
+		Where("user_id = ?", user.ID).
+		Order("granted_at ASC").
+		Find(&user.TrafficGrants).Error; err != nil {
+		return nil, err
+	}
 	return &user, nil
 }
 
@@ -380,64 +380,51 @@ func (s *UserService) ChangeOwnPassword(userID, oldPwd, newPwd string) error {
 	return s.db.Model(&user).Update("password_hash", hash).Error
 }
 
-// ResetDueQuotas zeroes the monthly usage counters (up_total/down_total) of
-// every user that participates in the global monthly reset, renewing their
-// quota window. The reset day itself is global and supplied by system_config
-// (quota.reset_day); the caller (the daily cron) is responsible for only
-// invoking this on that day, so it cannot double-reset within a month.
-// It only affects users with a finite quota (quota_bytes > 0); unlimited
-// users and users who have opted out (quota_reset_enabled = false, e.g. after
-// buying a one-time traffic package) keep their historical stats. last_reset_at
-// is stamped so the reset is recorded. Returns the number of users reset.
-func (s *UserService) ResetDueQuotas() (int64, error) {
-	res := s.db.Model(&model.User{}).
-		Where("quota_reset_enabled = ? AND quota_bytes > ?", true, 0).
-		Updates(map[string]any{
-			"up_total":      0,
-			"down_total":    0,
-			"last_reset_at": gorm.Expr("CURRENT_TIMESTAMP"),
-		})
-	return res.RowsAffected, res.Error
+// packagePreservingReset computes new up/down totals that keep the
+// package-used portion (pkgUsed) and zero the base portion, splitting the kept
+// amount by the current up/down ratio so direction is preserved. It is used by
+// quota resets and plan renewals so traffic-package bytes already consumed are
+// not refunded when the base plan window is renewed.
+func packagePreservingReset(up, down, pkgUsed int64) (int64, int64) {
+	total := up + down
+	if total <= 0 || pkgUsed <= 0 {
+		return 0, 0
+	}
+	newUp := int64(math.Round(float64(pkgUsed) * float64(up) / float64(total)))
+	newDown := pkgUsed - newUp
+	return newUp, newDown
 }
 
-// ReclaimExpiredTrafficGrants recovers the bonus quota granted by traffic
-// packages whose own expiry has passed. Each grant records the bytes it added
-// to a user's traffic_quota_bytes; when the grant's ExpireAt is in the past we
-// subtract that amount (floored at 0) and mark the grant reclaimed so it is not
-// processed twice. Permanent grants (nil ExpireAt — e.g. validity_days = 0
-// packages or redeemed traffic codes) are skipped. Returns the number of grants
-// reclaimed.
-func (s *UserService) ReclaimExpiredTrafficGrants() (int64, error) {
-	now := time.Now()
-	var grants []model.TrafficGrant
+// ResetDueQuotas renews the monthly usage window of every user that
+// participates in the global monthly reset. It zeroes only the BASE-plan usage,
+// preserving any traffic already charged to traffic packages / redemption
+// grants (which live in package_used_bytes and survive the reset). The reset day
+// itself is global and supplied by system_config (quota.reset_day); the caller
+// (the daily cron) is responsible for only invoking this on that day, so it
+// cannot double-reset within a month. It only affects users with a finite quota
+// (quota_bytes > 0); unlimited users and users who have opted out
+// (quota_reset_enabled = false, e.g. after buying a one-time traffic package)
+// keep their historical stats. Returns the number of users reset.
+func (s *UserService) ResetDueQuotas() (int64, error) {
+	var users []model.User
 	if err := s.db.
-		Where("reclaimed = ? AND expire_at IS NOT NULL AND expire_at <= ?", false, now).
-		Find(&grants).Error; err != nil {
+		Where("quota_reset_enabled = ? AND quota_bytes > ?", true, 0).
+		Find(&users).Error; err != nil {
 		return 0, err
 	}
-	var reclaimed int64
-	for _, g := range grants {
-		err := s.db.Transaction(func(tx *gorm.DB) error {
-			// Floor at 0 with a portable CASE (GREATEST is not available in
-			// every SQLite build and is avoided for portability).
-			if err := tx.Model(&model.User{}).
-				Where("id = ?", g.UserID).
-				Update("traffic_quota_bytes", gorm.Expr(
-					"CASE WHEN traffic_quota_bytes >= ? THEN traffic_quota_bytes - ? ELSE 0 END",
-					g.QuotaBytes, g.QuotaBytes)).
-				Error; err != nil {
-				return err
-			}
-			return tx.Model(&model.TrafficGrant{}).
-				Where("id = ?", g.ID).
-				Update("reclaimed", true).Error
-		})
-		if err != nil {
-			return reclaimed, err
+	var n int64
+	for i := range users {
+		u := &users[i]
+		newUp, newDown := packagePreservingReset(u.UpTotal, u.DownTotal, u.PackageUsedBytes)
+		if err := s.db.Model(u).Updates(map[string]any{
+			"up_total":      newUp,
+			"down_total":    newDown,
+		}).Error; err != nil {
+			return n, err
 		}
-		reclaimed++
+		n++
 	}
-	return reclaimed, nil
+	return n, nil
 }
 
 // ListNodesForUser returns the nodes a user can use: nodes at or below the
