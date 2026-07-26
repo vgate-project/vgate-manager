@@ -55,7 +55,7 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 
 	// Node stats: total count + online. Virtual child nodes never poll, so we
 	// attribute their parent's liveness (consistent with the node list / user
-	// node list, which both call hydrateVirtualOnline).
+	// node list, which both call hydrateVirtualNodes).
 	nodeCount, nodeOnline, err := s.nodeCounts()
 	if err != nil {
 		return nil, err
@@ -202,7 +202,7 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 
 // nodeCounts returns the total number of nodes and how many are currently
 // online. Virtual child nodes never poll the manager, so they inherit their
-// parent's liveness via hydrateVirtualOnline — the same semantics the node
+// parent's liveness via hydrateVirtualNodes — the same semantics the node
 // list and user node list use. A virtual node is online exactly when its real
 // parent is (and offline when the parent is missing or stale).
 func (s *StatsService) nodeCounts() (total, online int64, err error) {
@@ -212,7 +212,7 @@ func (s *StatsService) nodeCounts() (total, online int64, err error) {
 		Find(&nodes).Error; err != nil {
 		return 0, 0, err
 	}
-	if err := hydrateVirtualOnline(s.db, nodes); err != nil {
+	if err := hydrateVirtualNodes(s.db, nodes); err != nil {
 		return 0, 0, err
 	}
 	for _, n := range nodes {

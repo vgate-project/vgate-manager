@@ -43,12 +43,13 @@ func (s *NodeService) List(page, pageSize int, nodeType string) ([]model.Node, i
 	// Virtual child nodes never poll, so backfill their liveness from the parent.
 	ptrs := make([]*model.Node, len(nodes))
 	for i := range nodes {
+		// Real nodes compute Online from their own LastSeenAt.
+		if nodes[i].ParentID == nil {
+			nodes[i].Online = nodes[i].IsOnline()
+		}
 		ptrs[i] = &nodes[i]
 	}
-	if err := hydrateVirtualOnline(s.db, ptrs); err != nil {
-		return nil, 0, err
-	}
-	if err := s.hydrateParentNames(ptrs); err != nil {
+	if err := hydrateVirtualNodes(s.db, ptrs); err != nil {
 		return nil, 0, err
 	}
 	return nodes, total, err
@@ -60,10 +61,7 @@ func (s *NodeService) Get(id string) (*model.Node, error) {
 		return nil, err
 	}
 	if node.ParentID != nil {
-		if err := hydrateVirtualOnline(s.db, []*model.Node{&node}); err != nil {
-			return nil, err
-		}
-		if err := s.hydrateParentNames([]*model.Node{&node}); err != nil {
+		if err := hydrateVirtualNodes(s.db, []*model.Node{&node}); err != nil {
 			return nil, err
 		}
 	}
@@ -79,69 +77,62 @@ func (s *NodeService) ResolveParent(node *model.Node) (*model.Node, error) {
 	return s.Get(*node.ParentID)
 }
 
-// hydrateParentNames fills ParentName for virtual child nodes from a single
-// query over the distinct parent IDs on the page, so the admin UI can show the
-// parent's display name without depending on the parent being on the same page
-// (which pagination/filtering would otherwise break).
-func (s *NodeService) hydrateParentNames(nodes []*model.Node) error {
-	parentIDs := make([]string, 0)
+// hydrateVirtualNodes backfills Name, LastSeenAt, and Online for virtual child
+// nodes. Virtual nodes never poll and have no liveness of their own. Parents
+// already present in the slice are resolved in-memory; missing parents are
+// fetched in a single combined DB query so the former hydrateVirtualOnline and
+// hydrateParentNames no longer duplicate work or hit the database unnecessarily.
+func hydrateVirtualNodes(db *gorm.DB, nodes []*model.Node) error {
+	// 1. Index real (parent) nodes already in the slice for O(1) in-memory lookup.
+	index := make(map[string]*model.Node, len(nodes))
 	for _, n := range nodes {
-		if n.ParentID != nil {
-			parentIDs = append(parentIDs, *n.ParentID)
+		if n != nil && n.ParentID == nil {
+			index[n.ID] = n
 		}
 	}
-	if len(parentIDs) == 0 {
-		return nil
-	}
-	var parents []struct {
-		ID   string `gorm:"column:id"`
-		Name string `gorm:"column:name"`
-	}
-	if err := s.db.Model(&model.Node{}).Select("id", "name").
-		Where("id IN ?", parentIDs).Find(&parents).Error; err != nil {
-		return err
-	}
-	names := make(map[string]string, len(parents))
-	for i := range parents {
-		names[parents[i].ID] = parents[i].Name
-	}
-	for _, n := range nodes {
-		if n.ParentID != nil {
-			n.ParentName = names[*n.ParentID]
-		}
-	}
-	return nil
-}
 
-// hydrateVirtualOnline backfills LastSeenAt/Online for virtual child nodes from
-// their parent, since virtual nodes never poll and have no liveness of their own.
-func hydrateVirtualOnline(db *gorm.DB, nodes []*model.Node) error {
-	parentIDs := make([]string, 0)
+	// 2. Collect parent IDs that are NOT in the slice (need a DB lookup).
+	missing := make(map[string]bool)
 	for _, n := range nodes {
-		if n.ParentID != nil {
-			parentIDs = append(parentIDs, *n.ParentID)
+		if n == nil || n.ParentID == nil {
+			continue
+		}
+		if _, ok := index[*n.ParentID]; ok {
+			continue // will be resolved from memory below
+		}
+		missing[*n.ParentID] = true
+	}
+
+	// 3. Single combined DB query — only for parents absent from the slice.
+	if len(missing) > 0 {
+		ids := make([]string, 0, len(missing))
+		for id := range missing {
+			ids = append(ids, id)
+		}
+		type parentRow struct {
+			ID         string     `gorm:"column:id"`
+			Name       string     `gorm:"column:name"`
+			LastSeenAt *time.Time `gorm:"column:last_seen_at"`
+		}
+		var parents []parentRow
+		if err := db.Model(&model.Node{}).
+			Select("id", "name", "last_seen_at").
+			Where("id IN ?", ids).Find(&parents).Error; err != nil {
+			return err
+		}
+		for _, p := range parents {
+			index[p.ID] = &model.Node{Name: p.Name, LastSeenAt: p.LastSeenAt}
 		}
 	}
-	if len(parentIDs) == 0 {
-		return nil
-	}
-	var parents []struct {
-		ID         string     `gorm:"column:id"`
-		LastSeenAt *time.Time `gorm:"column:last_seen_at"`
-	}
-	if err := db.Model(&model.Node{}).Select("id", "last_seen_at").
-		Where("id IN ?", parentIDs).Find(&parents).Error; err != nil {
-		return err
-	}
-	seen := make(map[string]*time.Time, len(parents))
-	for i := range parents {
-		seen[parents[i].ID] = parents[i].LastSeenAt
-	}
+
+	// 4. Apply parent data to every virtual child.
 	for _, n := range nodes {
-		if n.ParentID != nil {
-			if ls, ok := seen[*n.ParentID]; ok {
-				n.LastSeenAt = ls
-			}
+		if n == nil || n.ParentID == nil {
+			continue
+		}
+		if parent, ok := index[*n.ParentID]; ok {
+			n.LastSeenAt = parent.LastSeenAt
+			n.ParentName = parent.Name
 			n.Online = n.IsOnline()
 		}
 	}

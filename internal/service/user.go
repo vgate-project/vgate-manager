@@ -453,7 +453,7 @@ func (s *UserService) ListNodesForUser(userID string) ([]model.Node, error) {
 		for i := range nodes {
 			ptrs[i] = &nodes[i]
 		}
-		if err := hydrateVirtualOnline(s.db, ptrs); err != nil {
+		if err := hydrateVirtualNodes(s.db, ptrs); err != nil {
 			return nil, err
 		}
 	}
