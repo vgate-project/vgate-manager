@@ -14,6 +14,11 @@ that the proxy nodes enforce.
 - [viper](https://github.com/spf13/viper) — config loading
 - [cobra](https://github.com/spf13/cobra) — CLI
 - [logrus](https://github.com/sirupsen/logrus) — structured logging
+- [golang-jwt/jwt](https://github.com/golang-jwt/jwt) v5 — JWT signing/validation
+- [telebot](https://github.com/tucnak/telebot) v4 — Telegram bot
+- [google/uuid](https://github.com/google/uuid) + [oklog/ulid](https://github.com/oklog/ulid) — ID generation
+- Payment / email SDKs: [stripe-go](https://github.com/stripe/stripe-go),
+  [go-pay/gopay](https://github.com/go-pay/gopay), [resend-go](https://github.com/resend/resend-go)
 
 ## Prerequisites
 
@@ -102,7 +107,7 @@ Two kinds of settings exist:
 - **Quota:** `quota.reset_day` (day-of-month the monthly usage counters reset)
 - **Password policy:** `password.min_length`, `password.require_complexity`
 - **Registration:** `user.register_enabled` (open registration), `user.register_require_invite`,
-  `user.register_email_suffix_whitelist`
+  `user.register_require_email_verify`, `user.register_email_suffix_whitelist`
 - **Trial accounts:** `user.trial_enabled`, `user.trial_quota_bytes`, `user.trial_duration_days`
 - **Invites:** `invite.default_user_quota`
 - **Site / subscription:** `site.name`, `site.base_url`, `sub.base_urls` (per-node subscription base URLs),
@@ -114,10 +119,16 @@ Two kinds of settings exist:
   `telegram.user_bot_enabled`, `telegram.alert_ticket`, `telegram.alert_announcement`,
   `telegram.alert_order_paid`, `telegram.alert_new_registration`, `telegram.alert_node_up`,
   `telegram.alert_node_down`, `telegram.alert_traffic_exceeded`
-- **Payments:** `alipay.*`, `wechat.*`, `stripe.*` gateway credentials (configured from the admin console **System
-  Config → Payment**)
+- **Payments:** `alipay.*`, `wechat.*`, `stripe.*`, `paypal.*` (client id/secret, notify/webhook urls,
+  `currency`, `sandbox`), and `apple.*` (issuer id, key id, bundle id, private key, environment,
+  `notify_url`, `product_map`) gateway credentials — configured from the admin console **System
+  Config → Payment**
 - **Traffic reminders:** `reminder.enabled`, `reminder.pct_threshold` (`80`),
   `reminder.days_threshold` (`3`), `reminder.cooldown_days` (`1`)
+
+**Common defaults** (set on first start, overridable via system-config): `quota.reset_day` = `1`,
+`password.min_length` = `8`, `invite.default_user_quota` = `5`, `user.trial_enabled` = `false`,
+`user.trial_quota_bytes` = `1073741824` (1 GiB), `user.trial_duration_days` = `7`.
 
 ### Environment overrides
 
@@ -135,14 +146,19 @@ rotates a session. Admin endpoints require
 - `POST /user/login`
 - `POST /user/register`
 - `POST /user/verify-email`
-- `GET  /user/config`
+- `GET  /user/config`, `GET /user/dashboard` — runtime config bundle / dashboard summary
 - `GET  /sub/:sub_token` — subscription info (node side)
+- `POST /user/resend-verification` — resend the email-verification message (captcha-gated)
 - `GET  /user/profile`, `PUT /user/profile`, `GET /user/subscribe`, `GET /user/subscribe-url`
 - `GET  /user/plans`, `GET /user/nodes`
 - `POST /user/regenerate-credential`, `POST /user/reset-sub-token`
 - `GET  /user/traffic-packages`
 - `POST /user/orders`, `GET /user/orders`, `GET /user/orders/:id`
 - `POST /user/orders/:id/pay`, `POST /user/orders/:id/close`
+- `POST /user/orders/:id/apple-verify` — verify an Apple App Store IAP receipt
+- `GET  /user/payment-methods` — enabled payment channels for the current user
+- `GET  /user/balance`, `POST /user/change-plan`, `GET /user/change-plan/preview`
+  — wallet balance, prorated plan change, and proration preview
 - `GET  /user/traffic`, `GET /user/traffic/hourly`
 - `POST /user/change-password`
 - `GET/POST/DELETE /user/invites`, `GET /user/invites/status`
@@ -159,7 +175,8 @@ rotates a session. Admin endpoints require
 - **Telegram link (self-service)** — bind/unbind a personal Telegram account and toggle announcement delivery:
   `GET /user/telegram/status`, `POST /user/telegram/bind`,
   `POST /user/telegram/unbind`, `PUT /user/telegram/notify`
-- `POST /api/v1/billing/:platform/notify` — async payment callback (public, `POST`) for `alipay`, `wechat`, or `stripe`
+- `POST /api/v1/billing/:platform/notify` — async payment callback (public, `POST`) for `alipay`,
+  `wechat`, `stripe`, `paypal`, or `apple`
 
 **Node (data plane)**
 
@@ -191,8 +208,12 @@ rotates a session. Admin endpoints require
   `POST /admin/tickets/:id/messages`, `PUT /admin/tickets/:id/status`, `GET /admin/tickets/unread`
 - Telegram: `POST /admin/telegram/broadcast` (send to all linked users), and the admin self-link
   `GET/POST /admin/me/telegram/{status,bind,unbind}`
-- Super-admin only: `GET/POST /admin/admins`, `PUT /admin/admins/:id/password`, plan CRUD (`GET /admin/plans`,
-  `POST /admin/plans`, `GET/PUT/DELETE /admin/plans/:id`)
+- Reference data: `GET /admin/reference` — static lookup lists for admin dialogs.
+- Payment channels: `GET /admin/payment-methods` (super-admin) — enabled payment channels.
+- Wallet: `GET/POST /admin/users/:id/balance` — read / adjust a user's wallet balance.
+- Super-admin only: full admin CRUD `GET/POST/PUT/DELETE /admin/admins[/:id]`,
+  `PUT /admin/admins/:id/password`, and plan **management** CRUD (`POST /admin/plans`,
+  `PUT/DELETE /admin/plans/:id`). Any admin may `GET /admin/plans` and `GET /admin/traffic-packages`.
 
 **Health**
 
@@ -259,9 +280,13 @@ accounts for ticket notifications. It is enabled and configured via DB-backed sy
 | `telegram.bot_token`          | `""`    | BotFather token (secret).                           |
 | `telegram.bot_username`       | `""`    | Bot `@username`, used to build `/start` deep links. |
 | `telegram.user_bot_enabled`   | `false` | Allow users to self-bind via deep link.             |
-| `telegram.alert_ticket`       | `false` | Notify linked admins on new tickets / user replies. |
-| `telegram.alert_announcement` | `false` | Forward announcements to linked users.              |
-| `telegram.alert_order_paid`   | `false` | Notify on paid orders (and other alert toggles).    |
+| `telegram.alert_ticket`           | `false` | Notify linked admins on new tickets / user replies. |
+| `telegram.alert_announcement`     | `false` | Forward announcements to linked users.              |
+| `telegram.alert_order_paid`       | `false` | Notify on paid orders.                              |
+| `telegram.alert_new_registration` | `false` | Notify on new user registrations.                   |
+| `telegram.alert_node_up`          | `false` | Notify when a node comes online.                    |
+| `telegram.alert_node_down`        | `false` | Notify when a node goes offline.                    |
+| `telegram.alert_traffic_exceeded` | `false` | Notify when a user exceeds their traffic quota.     |
 
 Binding uses a `/start <code>` deep link. The code carries a `u_` (user) or `a_`
 (admin) prefix so the bot routes the bind to the right account: admins link from **Settings → Telegram** in the admin
@@ -296,8 +321,24 @@ system-config endpoint so the browser will allow credentialed requests.
 Defaults to a local SQLite file `vgate_manager.db`. To use PostgreSQL set
 `db.dialect: postgres` and `db.dsn` to a Postgres DSN. Tables are auto-migrated on startup (admins, nodes, users,
 user_nodes, user_node_traffics, traffic hourly stats, refresh tokens, system config, invite codes, email verifications,
-redemption codes and records, announcements, plans and plan prices, traffic packages, orders, tickets, ticket messages,
-and ticket read states, …).
+redemption codes and records, announcements, plans — plan prices are stored as a JSON column on the plan, so there is
+no separate `plan_prices` write path (the legacy table is retained only for historical order reads) — traffic packages,
+traffic grants, balance transactions, orders, tickets, ticket messages, and ticket read states, …).
+
+## Background tasks
+
+Several jobs run automatically (started in `cmd/root.go`):
+
+- **Expired-order closer** — every 5 minutes (`orderSvc.CloseExpired`).
+- **Hourly-stats pruning** — once at startup, then every 24 hours (deletes `traffic_hourly_stat`
+  rows older than 48h).
+- **Quota reset** — once at startup, then every 24 hours (resets usage counters on `quota.reset_day`).
+- **Traffic-reminder scanner** — every hour (`reminderSvc.CheckAndSend`): sends threshold/days-left
+  reminders on each user's chosen channel (`none` / `email` / `telegram`).
+
+The Telegram bot (when enabled) additionally reconciles its long-poll loop every 15s and runs its
+own node-up/down (1 min) and traffic-exceeded (15 min) monitors inside `internal/service/telegram.go`.
+Hourly traffic is aggregated **as nodes report it** (event-driven), not by a scheduled job.
 
 ## Testing
 
