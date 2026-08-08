@@ -15,8 +15,13 @@ that the proxy nodes enforce.
 - [cobra](https://github.com/spf13/cobra) — CLI
 - [logrus](https://github.com/sirupsen/logrus) — structured logging
 - [golang-jwt/jwt](https://github.com/golang-jwt/jwt) v5 — JWT signing/validation
-- [telebot](https://github.com/tucnak/telebot) v4 — Telegram bot
-- [google/uuid](https://github.com/google/uuid) + [oklog/ulid](https://github.com/oklog/ulid) — ID generation
+- [telebot](https://github.com/tucnak/telebot) v4 (module `gopkg.in/telebot.v4`) — Telegram bot
+- [google/uuid](https://github.com/google/uuid) + [oklog/ulid](https://github.com/oklog/ulid) v2 — ID generation
+- [gorm.io/driver/postgres](https://gorm.io/docs/connecting_to_the_database.html) — PostgreSQL driver
+- [gorm.io/datatypes](https://github.com/go-gorm/datatypes) — JSON config columns (nodes)
+- [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) — bcrypt password hashing
+- [golang.org/x/time](https://pkg.go.dev/golang.org/x/time) — rate-limiting middleware
+- [go.yaml.in/yaml/v3](https://pkg.go.dev/go.yaml.in/yaml/v3) — Clash YAML subscription rendering
 - Payment / email SDKs: [stripe-go](https://github.com/stripe/stripe-go),
   [go-pay/gopay](https://github.com/go-pay/gopay), [resend-go](https://github.com/resend/resend-go)
 
@@ -41,7 +46,7 @@ On first start the database is auto-migrated and an initial admin is bootstrappe
 (default **username `admin`**; the bundled
 `docker-compose.yml` defaults the password to `change-me`, otherwise set
 `admin.bootstrap.password` / `ADMIN_BOOTSTRAP_PASSWORD` explicitly). The admin is created **only once** on first start;
-subsequent starts reuse the existing admin. Data migrations run automatically on startup (idempotent), and DB-backed
+subsequent starts reuse the existing admin. GORM `AutoMigrate` runs automatically on startup (idempotent), and DB-backed
 system-config overrides are merged on top of `config.yml`.
 
 ### Admin CLI
@@ -137,8 +142,9 @@ viper reads environment variables with `.` → `_` (uppercase), e.g.
 
 ## API overview
 
-All endpoints are prefixed with `/api/v1`. Auth uses JWT access + refresh tokens. Login returns both; `/admin/refresh`
-rotates a session. Admin endpoints require
+All endpoints are prefixed with `/api/v1`. Auth uses JWT. **Admin** login (`POST /admin/login`) returns an access token
+plus a refresh token, and `POST /admin/refresh` rotates the session; **user** login (`POST /user/login`) returns only an
+access token — users do not receive refresh tokens, so a `401` means re-login. Admin endpoints require
 `Authorization: Bearer <token>`. Node endpoints use a separate node token (`node_auth` middleware).
 
 **Public / user**
@@ -194,7 +200,7 @@ rotates a session. Admin endpoints require
   `PUT /admin/users/:id/password`, `GET /admin/users/:id/nodes`,
   `PUT /admin/users/:id/nodes`, `POST /admin/change-password`
 - `GET /admin/traffic`, `GET /admin/stats/overview`
-- Zombie users: `POST /admin/users/zombies/preview`, `POST /admin/users/zombies/cleanup`
+- Zombie users (super-admin only): `POST /admin/users/zombies/preview`, `POST /admin/users/zombies/cleanup`
 - `GET /admin/system-config`, `PUT /admin/system-config` (super-admin only)
 - `POST /admin/utils/generate-x25519`
 - Invites: `GET/POST/DELETE /admin/invites`
@@ -213,7 +219,8 @@ rotates a session. Admin endpoints require
 - Wallet: `GET/POST /admin/users/:id/balance` — read / adjust a user's wallet balance.
 - Super-admin only: full admin CRUD `GET/POST/PUT/DELETE /admin/admins[/:id]`,
   `PUT /admin/admins/:id/password`, and plan **management** CRUD (`POST /admin/plans`,
-  `PUT/DELETE /admin/plans/:id`). Any admin may `GET /admin/plans` and `GET /admin/traffic-packages`.
+  `PUT/DELETE /admin/plans/:id`). Any admin may `GET /admin/plans`, `GET /admin/plans/:id`,
+  and `GET /admin/traffic-packages`.
 
 **Health**
 
@@ -231,9 +238,6 @@ restart required. Two backends are supported:
 Shared settings (both backends): `email.enabled` (master switch), `email.from` (the sender address; for Resend it must
 be a verified domain), and an optional `email.from_name`
 (display name, e.g. `VGate` → `"VGate" <noreply@vgate.io>`).
-
-> Legacy per-backend `email.smtp_from` / `email.resend_from` keys are migrated into the
-> single `email.from` on startup.
 
 Verify connectivity from the admin console (**System Config → Email → General → Test Email**)
 or call the endpoint directly:
@@ -320,9 +324,10 @@ system-config endpoint so the browser will allow credentialed requests.
 
 Defaults to a local SQLite file `vgate_manager.db`. To use PostgreSQL set
 `db.dialect: postgres` and `db.dsn` to a Postgres DSN. Tables are auto-migrated on startup (admins, nodes, users,
-user_nodes, user_node_traffics, traffic hourly stats, refresh tokens, system config, invite codes, email verifications,
+user_nodes, user_node_traffic, traffic hourly stats, refresh tokens, system config, invite codes, email verifications,
 redemption codes and records, announcements, plans — plan prices are stored as a JSON column on the plan, so there is
-no separate `plan_prices` write path (the legacy table is retained only for historical order reads) — traffic packages,
+no separate `plan_prices` write path (the legacy `plan_prices` table is read only as a fallback for historical order
+reads and is not provisioned on a fresh install) — traffic packages,
 traffic grants, balance transactions, orders, tickets, ticket messages, and ticket read states, …).
 
 ## Background tasks
@@ -330,7 +335,7 @@ traffic grants, balance transactions, orders, tickets, ticket messages, and tick
 Several jobs run automatically (started in `cmd/root.go`):
 
 - **Expired-order closer** — every 5 minutes (`orderSvc.CloseExpired`).
-- **Hourly-stats pruning** — once at startup, then every 24 hours (deletes `traffic_hourly_stat`
+- **Hourly-stats pruning** — once at startup, then every 24 hours (deletes `traffic_hourly_stats`
   rows older than 48h).
 - **Quota reset** — once at startup, then every 24 hours (resets usage counters on `quota.reset_day`).
 - **Traffic-reminder scanner** — every hour (`reminderSvc.CheckAndSend`): sends threshold/days-left
