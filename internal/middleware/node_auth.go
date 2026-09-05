@@ -25,7 +25,11 @@ func NodeAuth(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		var node model.Node
-		if err := db.Where("id = ? AND enabled = ?", nodeID, true).First(&node).Error; err != nil {
+		// Virtual child nodes (parent_id set) must never authenticate: their
+		// token is a placeholder, and letting one through would let a leaked
+		// value reach the agent API (config/users/traffic) under a virtual
+		// identity. Only real nodes poll.
+		if err := db.Where("id = ? AND enabled = ? AND parent_id IS NULL", nodeID, true).First(&node).Error; err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}

@@ -325,3 +325,145 @@ func TestVirtualNodeValidation(t *testing.T) {
 		t.Errorf("expected error creating a virtual node whose parent is itself virtual")
 	}
 }
+
+// TestUpdateRejectsSelfParent verifies that Update refuses a node whose
+// parent_id points at itself (Create never hits this, but Update is a separate
+// write path).
+func TestUpdateRejectsSelfParent(t *testing.T) {
+	db := vdb(t)
+	ns := NewNodeService(db)
+
+	node := &model.Node{Name: "n", Address: "p:443", Port: 443, Network: "tcp", Security: "none", Level: 0, Enabled: true}
+	if err := ns.Create(node); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := ns.Get(node.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	got.ParentID = &got.ID
+	if err := ns.Update(got); err == nil {
+		t.Errorf("expected error for self-referential parent_id on update")
+	}
+}
+
+// TestUpdateRejectsVirtualParent verifies that Update refuses to reparent a
+// node onto a virtual node — the two-level rule Create enforces must also hold
+// on the update path.
+func TestUpdateRejectsVirtualParent(t *testing.T) {
+	db := vdb(t)
+	ns := NewNodeService(db)
+
+	parent := &model.Node{Name: "parent", Address: "p:443", Port: 443, Network: "tcp", Security: "none", Level: 0, Enabled: true}
+	if err := ns.Create(parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child := &model.Node{Name: "child", Address: "1.1.1.1", ParentID: &parent.ID, Level: 0, Enabled: true}
+	if err := ns.Create(child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	other := &model.Node{Name: "other", Address: "o:443", Port: 443, Network: "tcp", Security: "none", Level: 0, Enabled: true}
+	if err := ns.Create(other); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	got, err := ns.Get(other.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	got.ParentID = &child.ID // child is virtual — must be rejected
+	if err := ns.Update(got); err == nil {
+		t.Errorf("expected error for update setting a virtual node as parent")
+	}
+}
+
+// TestUpdateRejectsParentOnNodeWithChildren verifies that a real node that
+// already has virtual children cannot be turned into a virtual node itself —
+// that would create grandchildren, which the one-level model does not support.
+func TestUpdateRejectsParentOnNodeWithChildren(t *testing.T) {
+	db := vdb(t)
+	ns := NewNodeService(db)
+
+	parent := &model.Node{Name: "parent", Address: "p:443", Port: 443, Network: "tcp", Security: "none", Level: 0, Enabled: true}
+	if err := ns.Create(parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child := &model.Node{Name: "child", Address: "1.1.1.1", ParentID: &parent.ID, Level: 0, Enabled: true}
+	if err := ns.Create(child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	other := &model.Node{Name: "other", Address: "o:443", Port: 443, Network: "tcp", Security: "none", Level: 0, Enabled: true}
+	if err := ns.Create(other); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	got, err := ns.Get(parent.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	got.ParentID = &other.ID // parent has children — must be rejected
+	if err := ns.Update(got); err == nil {
+		t.Errorf("expected error for update making a node-with-children virtual")
+	}
+}
+
+// TestUpdateAllowsReparent verifies the legitimate case: a virtual child may
+// move to a different real parent, and validation passes.
+func TestUpdateAllowsReparent(t *testing.T) {
+	db := vdb(t)
+	ns := NewNodeService(db)
+
+	p1 := &model.Node{Name: "p1", Address: "p1:443", Port: 443, Network: "tcp", Security: "none", Level: 0, Enabled: true}
+	if err := ns.Create(p1); err != nil {
+		t.Fatalf("create p1: %v", err)
+	}
+	p2 := &model.Node{Name: "p2", Address: "p2:443", Port: 443, Network: "tcp", Security: "none", Level: 0, Enabled: true}
+	if err := ns.Create(p2); err != nil {
+		t.Fatalf("create p2: %v", err)
+	}
+	child := &model.Node{Name: "child", Address: "1.1.1.1", ParentID: &p1.ID, Level: 0, Enabled: true}
+	if err := ns.Create(child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	got, err := ns.Get(child.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	got.ParentID = &p2.ID
+	if err := ns.Update(got); err != nil {
+		t.Fatalf("update reparent: %v", err)
+	}
+	updated, err := ns.Get(child.ID)
+	if err != nil {
+		t.Fatalf("re-get: %v", err)
+	}
+	if updated.ParentID == nil || *updated.ParentID != p2.ID {
+		t.Errorf("ParentID = %v, want %s", updated.ParentID, p2.ID)
+	}
+}
+
+// TestCreateTokenSemantics verifies the token rules: real nodes mint a random
+// 32-char secret, virtual nodes get their own ID as a non-secret placeholder
+// (they never authenticate, but the column is not null + unique).
+func TestCreateTokenSemantics(t *testing.T) {
+	db := vdb(t)
+	ns := NewNodeService(db)
+
+	real := &model.Node{Name: "real", Address: "r:443", Port: 443, Network: "tcp", Security: "none", Level: 0, Enabled: true}
+	if err := ns.Create(real); err != nil {
+		t.Fatalf("create real: %v", err)
+	}
+	if len(real.Token) != 64 || real.Token == real.ID {
+		t.Errorf("real node token = %q, want a 64-hex-char random secret distinct from the ID", real.Token)
+	}
+
+	virtual := &model.Node{Name: "virtual", Address: "1.1.1.1", ParentID: &real.ID, Level: 0, Enabled: true}
+	if err := ns.Create(virtual); err != nil {
+		t.Fatalf("create virtual: %v", err)
+	}
+	if virtual.Token != virtual.ID {
+		t.Errorf("virtual node token = %q, want the ID placeholder %q", virtual.Token, virtual.ID)
+	}
+}

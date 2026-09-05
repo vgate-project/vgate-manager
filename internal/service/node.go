@@ -140,14 +140,20 @@ func hydrateVirtualNodes(db *gorm.DB, nodes []*model.Node) error {
 }
 
 // Create persists a new node, minting an ID and token if unset. A virtual child
-// node (ParentID set) is validated against its parent but otherwise mints a token
-// (unused — no server polls a virtual node) to satisfy the not-null constraint.
+// node (ParentID set) is validated against its parent and gets its own ID as a
+// token placeholder: it never authenticates (NodeAuth only matches real nodes),
+// but the token column is not null + unique, so it needs a value that is
+// clearly not a usable secret.
 func (s *NodeService) Create(node *model.Node) error {
 	if node.ID == "" {
 		node.ID = util.NewNodeID()
 	}
 	if node.Token == "" {
-		node.Token = util.RandomToken(32)
+		if node.ParentID != nil {
+			node.Token = node.ID
+		} else {
+			node.Token = util.RandomToken(32)
+		}
 	}
 	if node.ParentID != nil {
 		parent, err := s.Get(*node.ParentID)
@@ -180,10 +186,35 @@ func (s *NodeService) nameExists(name, excludeID string) bool {
 }
 
 // Update saves the full node state (PUT-replace semantics). The caller loads
-// the existing node and applies the request before calling Update.
+// the existing node and applies the request before calling Update. Parent
+// assignments are re-validated here — Create checks them too, but Update is a
+// separate write path — so the API cannot produce a dangling, self-referential
+// or two-levels-deep parent link.
 func (s *NodeService) Update(node *model.Node) error {
 	if err := validateNode(node); err != nil {
 		return err
+	}
+	if node.ParentID != nil {
+		if *node.ParentID == node.ID {
+			return errors.New("a node cannot be its own parent")
+		}
+		parent, err := s.Get(*node.ParentID)
+		if err != nil {
+			return fmt.Errorf("parent node not found: %w", err)
+		}
+		if parent.ParentID != nil {
+			return errors.New("a virtual node cannot be the parent of another virtual node")
+		}
+		// A node that itself has children cannot become a virtual child: its
+		// children would become grandchildren, which the one-level model
+		// (hydrateVirtualNodes, FetchConfig) does not support.
+		var childCount int64
+		if err := s.db.Model(&model.Node{}).Where("parent_id = ?", node.ID).Count(&childCount).Error; err != nil {
+			return err
+		}
+		if childCount > 0 {
+			return errors.New("a node with virtual children cannot become a virtual node")
+		}
 	}
 	if s.nameExists(node.Name, node.ID) {
 		return fmt.Errorf("node name %q already exists", node.Name)

@@ -8,11 +8,11 @@ import (
 	"github.com/vgate-project/vgate-manager/internal/model"
 )
 
-// TestStatsNodeCountsIncludesVirtualChildren verifies that the overview's
-// node_online count attributes a virtual child's liveness to its parent:
-// virtual nodes never poll, so they must be online exactly when their real
-// parent is (and offline when the parent is missing or stale).
-func TestStatsNodeCountsIncludesVirtualChildren(t *testing.T) {
+// TestStatsNodeCountsExcludesVirtualNodes verifies that the overview's node
+// counts cover real nodes only: virtual children never poll and have no data
+// of their own, so they must not inflate node_count / node_online even when
+// their parent is online.
+func TestStatsNodeCountsExcludesVirtualNodes(t *testing.T) {
 	db := vdb(t)
 	ns := NewNodeService(db)
 	ss := NewStatsService(db)
@@ -31,8 +31,8 @@ func TestStatsNodeCountsIncludesVirtualChildren(t *testing.T) {
 	}
 	for i := 0; i < 2; i++ {
 		child := &model.Node{
-			Name: fmt.Sprintf("virtual%d", i), Address: "real.example.com:8443", Port: 8443,
-			Network: "tcp", Security: "none", Enabled: true,
+			Name: fmt.Sprintf("virtual%d", i), Address: fmt.Sprintf("10.0.0.%d", i+1),
+			Enabled:  true,
 			ParentID: &real.ID,
 		}
 		if err := ns.Create(child); err != nil {
@@ -44,14 +44,14 @@ func TestStatsNodeCountsIncludesVirtualChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nodeCounts: %v", err)
 	}
-	if total != 3 {
-		t.Errorf("total = %d, want 3", total)
+	if total != 1 {
+		t.Errorf("total = %d, want 1 (virtual children excluded)", total)
 	}
-	if online != 3 {
-		t.Errorf("online = %d, want 3 (real + 2 virtuals inherit parent liveness)", online)
+	if online != 1 {
+		t.Errorf("online = %d, want 1 (real node only)", online)
 	}
 
-	// When the parent goes stale, virtual children must go offline too.
+	// When the real node goes stale, the counts still track it alone.
 	if err := db.Model(&model.Node{}).Where("id = ?", real.ID).
 		Update("last_seen_at", time.Now().Add(-time.Hour)).Error; err != nil {
 		t.Fatalf("stale parent: %v", err)
@@ -60,10 +60,10 @@ func TestStatsNodeCountsIncludesVirtualChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nodeCounts: %v", err)
 	}
-	if total != 3 {
-		t.Errorf("total = %d, want 3", total)
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
 	}
 	if online != 0 {
-		t.Errorf("online = %d, want 0 (parent stale => virtuals offline)", online)
+		t.Errorf("online = %d, want 0 (real node stale)", online)
 	}
 }
