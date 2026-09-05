@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+	"regexp"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/vgate-project/vgate-manager/internal/model"
+	"github.com/vgate-project/vgate-manager/internal/wire"
 )
 
 func vdb(t *testing.T) *gorm.DB {
@@ -465,5 +468,123 @@ func TestCreateTokenSemantics(t *testing.T) {
 	}
 	if virtual.Token != virtual.ID {
 		t.Errorf("virtual node token = %q, want the ID placeholder %q", virtual.Token, virtual.ID)
+	}
+}
+
+// realityParent builds a real node with a reality config carrying the given
+// short_ids whitelist, ready for ns.Create.
+func realityParent(name string, shortIDs ...string) *model.Node {
+	rc := wire.RealityConfig{ServerName: "www.example.com", ShortIds: shortIDs}
+	b, _ := json.Marshal(rc)
+	return &model.Node{
+		Name: name, Address: name + ":443", Port: 443, Network: "tcp",
+		Security: "reality", RealityConfig: new(datatypes.JSON(b)), Level: 0, Enabled: true,
+	}
+}
+
+// parentShortIDs returns the short_ids whitelist currently stored on a node.
+func parentShortIDs(t *testing.T, db *gorm.DB, id string) []string {
+	t.Helper()
+	var p model.Node
+	if err := db.First(&p, "id = ?", id).Error; err != nil {
+		t.Fatalf("load parent: %v", err)
+	}
+	if p.RealityConfig == nil {
+		return nil
+	}
+	var rc wire.RealityConfig
+	if err := json.Unmarshal(*p.RealityConfig, &rc); err != nil {
+		t.Fatalf("decode parent reality config: %v", err)
+	}
+	return rc.ShortIds
+}
+
+// TestVirtualNodeShortIDWhitelistSync verifies the manager keeps the parent's
+// short_ids whitelist in sync with its children's dedicated sids across
+// create, change and delete.
+func TestVirtualNodeShortIDWhitelistSync(t *testing.T) {
+	db := vdb(t)
+	ns := NewNodeService(db)
+
+	parent := realityParent("parent", "abcdef01")
+	if err := ns.Create(parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	child := &model.Node{Name: "child", Address: "1.1.1.1", ParentID: &parent.ID, RealitySID: "1234abcd", Level: 0, Enabled: true}
+	if err := ns.Create(child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	sids := parentShortIDs(t, db, parent.ID)
+	if len(sids) != 2 || sids[0] != "abcdef01" || sids[1] != "1234abcd" {
+		t.Errorf("whitelist after create = %v, want [abcdef01 1234abcd]", sids)
+	}
+
+	// Changing the sid must swap the whitelisted value.
+	got, err := ns.Get(child.ID)
+	if err != nil {
+		t.Fatalf("get child: %v", err)
+	}
+	got.RealitySID = "beefcafe"
+	if err := ns.Update(got); err != nil {
+		t.Fatalf("update child sid: %v", err)
+	}
+	sids = parentShortIDs(t, db, parent.ID)
+	if len(sids) != 2 || sids[0] != "abcdef01" || sids[1] != "beefcafe" {
+		t.Errorf("whitelist after change = %v, want [abcdef01 beefcafe]", sids)
+	}
+
+	// Deleting the child removes its sid from the whitelist.
+	if err := ns.Delete(child.ID); err != nil {
+		t.Fatalf("delete child: %v", err)
+	}
+	sids = parentShortIDs(t, db, parent.ID)
+	if len(sids) != 1 || sids[0] != "abcdef01" {
+		t.Errorf("whitelist after delete = %v, want [abcdef01]", sids)
+	}
+}
+
+// TestVirtualNodeShortIDValidation verifies sid format, uniqueness and
+// collision rules, plus auto-generation for children of reality parents.
+func TestVirtualNodeShortIDValidation(t *testing.T) {
+	db := vdb(t)
+	ns := NewNodeService(db)
+
+	parent := realityParent("parent", "abcdef01")
+	if err := ns.Create(parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	// Invalid format rejected.
+	bad := &model.Node{Name: "bad", Address: "1.1.1.1", ParentID: &parent.ID, RealitySID: "XYZ!", Level: 0, Enabled: true}
+	if err := ns.Create(bad); err == nil {
+		t.Errorf("expected error for non-hex reality_sid")
+	}
+
+	// Collision with the parent's own short_ids rejected.
+	collide := &model.Node{Name: "collide", Address: "4.4.4.4", ParentID: &parent.ID, RealitySID: "abcdef01", Level: 0, Enabled: true}
+	if err := ns.Create(collide); err == nil {
+		t.Errorf("expected error for sid colliding with the parent's short_ids")
+	}
+
+	// Empty sid on a reality child is auto-generated.
+	auto := &model.Node{Name: "auto", Address: "2.2.2.2", ParentID: &parent.ID, Level: 0, Enabled: true}
+	if err := ns.Create(auto); err != nil {
+		t.Fatalf("create child without sid: %v", err)
+	}
+	if !regexp.MustCompile("^[0-9a-f]{1,16}$").MatchString(auto.RealitySID) {
+		t.Errorf("auto-generated sid = %q, want 1-16 hex chars", auto.RealitySID)
+	}
+
+	// Duplicate sid (another child already using it) rejected.
+	dup := &model.Node{Name: "dup", Address: "3.3.3.3", ParentID: &parent.ID, RealitySID: auto.RealitySID, Level: 0, Enabled: true}
+	if err := ns.Create(dup); err == nil {
+		t.Errorf("expected error for duplicate reality_sid")
+	}
+
+	// A sid on a real node is rejected.
+	realSid := &model.Node{Name: "realsid", Address: "r:443", Port: 443, Network: "tcp", Security: "none", RealitySID: "12345678", Level: 0, Enabled: true}
+	if err := ns.Create(realSid); err == nil {
+		t.Errorf("expected error for reality_sid on a real node")
 	}
 }

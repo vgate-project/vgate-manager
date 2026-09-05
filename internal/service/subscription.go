@@ -98,7 +98,8 @@ func (s *SubscriptionService) BuildProxySpecs(user *model.User) ([]proxySpec, er
 
 	specs := make([]proxySpec, 0, len(nodes))
 	for i := range nodes {
-		src := &nodes[i]
+		node := &nodes[i] // the row as stored (virtual children keep their own identity fields)
+		src := node
 		if src.ParentID != nil {
 			parent, ok := parents[*src.ParentID]
 			if !ok {
@@ -121,6 +122,12 @@ func (s *SubscriptionService) BuildProxySpecs(user *model.User) ([]proxySpec, er
 		if err != nil {
 			log.Warnf("skip node %s (%s) for user %s: %v", src.ID, src.Name, user.ID, err)
 			continue
+		}
+		// A virtual child with a dedicated Reality short ID overrides the
+		// parent's default one, so clients importing this entry point connect
+		// with a SID the node can attribute back to this child.
+		if node.ParentID != nil && node.RealitySID != "" {
+			spec.RealitySID = node.RealitySID
 		}
 		specs = append(specs, *spec)
 	}

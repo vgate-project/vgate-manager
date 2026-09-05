@@ -28,7 +28,9 @@ func NewServerService(db *gorm.DB) *ServerService {
 
 // FetchConfig materializes a node's stored JSON config into the wire.Config
 // shape the node expects from GET /server/config. A virtual child node has no
-// server of its own, so if one is passed we resolve its parent's config.
+// server of its own, so if one is passed we resolve its parent's config. For a
+// real node the config also carries the sid → virtual child mapping so the
+// node can attribute reported traffic to the entry point the client used.
 func (s *ServerService) FetchConfig(node *model.Node) (*wire.Config, error) {
 	if node.ParentID != nil {
 		var parent model.Node
@@ -37,7 +39,23 @@ func (s *ServerService) FetchConfig(node *model.Node) (*wire.Config, error) {
 		}
 		node = &parent
 	}
-	return nodeToConfig(node)
+	cfg, err := nodeToConfig(node)
+	if err != nil {
+		return nil, err
+	}
+	var children []model.Node
+	if err := s.db.Select("id", "reality_sid").
+		Where("parent_id = ? AND reality_sid <> ?", node.ID, "").
+		Find(&children).Error; err != nil {
+		return nil, fmt.Errorf("load child short ids: %w", err)
+	}
+	if len(children) > 0 {
+		cfg.TrafficSIDs = make([]wire.TrafficSID, 0, len(children))
+		for _, c := range children {
+			cfg.TrafficSIDs = append(cfg.TrafficSIDs, wire.TrafficSID{NodeID: c.ID, SID: c.RealitySID})
+		}
+	}
+	return cfg, nil
 }
 
 // FetchUsers returns the active, non-expired, under-quota users a node serves,
@@ -141,20 +159,28 @@ func (s *ServerService) eligibleUserIDs(nodeID string, nodeLevel int) ([]string,
 // (the real reported bytes) so the dashboard 24h series / hourly chart reflects
 // actual traffic rather than the billing-inflated figure.
 func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) error {
-	// Resolve the traffic multiplier once. Virtual child nodes never poll, but
-	// their traffic is reported against the real parent; mirror FetchConfig and
-	// inherit the parent's multiplier. A missing node defaults to 1 (no change).
-	mult, err := s.nodeTrafficMultiplier(nodeID)
-	if err != nil {
-		return err
-	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 		hour := now.UTC().Truncate(time.Hour)
 		statRows := make([]model.TrafficHourlyStat, 0, len(deltas))
+		mults := make(map[string]float64) // resolved node id → multiplier cache
 		for _, d := range deltas {
 			if d.Up == 0 && d.Down == 0 {
 				continue
+			}
+			// Resolve the entry point this delta belongs to (the reporting node
+			// itself or one of its virtual children, matched by Reality short
+			// ID on the node side) and its effective traffic multiplier.
+			targetNodeID, err := resolveTrafficNode(tx, nodeID, d.NodeID)
+			if err != nil {
+				return err
+			}
+			mult, ok := mults[targetNodeID]
+			if !ok {
+				if mult, err = nodeTrafficMultiplier(tx, targetNodeID); err != nil {
+					return err
+				}
+				mults[targetNodeID] = mult
 			}
 			// Apply the per-node traffic multiplier to the reported deltas.
 			up := int64(math.Round(float64(d.Up) * mult))
@@ -237,7 +263,7 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 					"up_total":   gorm.Expr("up_total + ?", up),
 					"down_total": gorm.Expr("down_total + ?", down),
 				}),
-			}).Create(&model.UserNodeTraffic{UserID: user.ID, NodeID: nodeID, UpTotal: up, DownTotal: down}).Error; err != nil {
+			}).Create(&model.UserNodeTraffic{UserID: user.ID, NodeID: targetNodeID, UpTotal: up, DownTotal: down}).Error; err != nil {
 				return fmt.Errorf("upsert node traffic: %w", err)
 			}
 			// Per-user hourly delta for the dashboard traffic series. Written
@@ -270,12 +296,34 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 	})
 }
 
+// resolveTrafficNode maps a reported node_id onto an entry point of the
+// authenticated real node. An empty value falls back to the reporting node
+// itself (legacy agents, non-reality traffic, or the ws/xhttp xraybridge path
+// where the short ID never surfaces). A claimed id is accepted only when it is
+// the reporting node or a direct virtual child of it, so a buggy or hostile
+// agent cannot attribute traffic to arbitrary nodes.
+func resolveTrafficNode(db *gorm.DB, nodeID, claimed string) (string, error) {
+	claimed = strings.TrimSpace(claimed)
+	if claimed == "" || claimed == nodeID {
+		return nodeID, nil
+	}
+	var child model.Node
+	if err := db.Select("id").First(&child, "id = ? AND parent_id = ?", claimed, nodeID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Warnf("traffic reported for unknown node %q on node %s; attributed to %s", claimed, nodeID, nodeID)
+			return nodeID, nil
+		}
+		return "", fmt.Errorf("resolve traffic node %q: %w", claimed, err)
+	}
+	return child.ID, nil
+}
+
 // nodeTrafficMultiplier returns the effective traffic multiplier for a node.
 // Virtual child nodes inherit their parent's multiplier. A multiplier <= 0 (an
 // unset/legacy node) is treated as 1 so traffic is never zeroed or corrupted.
-func (s *ServerService) nodeTrafficMultiplier(nodeID string) (float64, error) {
+func nodeTrafficMultiplier(db *gorm.DB, nodeID string) (float64, error) {
 	var node model.Node
-	if err := s.db.Select("parent_id", "traffic_multiplier").First(&node, "id = ?", nodeID).Error; err != nil {
+	if err := db.Select("parent_id", "traffic_multiplier").First(&node, "id = ?", nodeID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return 1, nil
 		}
@@ -283,7 +331,7 @@ func (s *ServerService) nodeTrafficMultiplier(nodeID string) (float64, error) {
 	}
 	if node.ParentID != nil {
 		var parent model.Node
-		if err := s.db.Select("traffic_multiplier").First(&parent, "id = ?", *node.ParentID).Error; err != nil {
+		if err := db.Select("traffic_multiplier").First(&parent, "id = ?", *node.ParentID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return 1, nil
 			}

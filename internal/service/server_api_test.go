@@ -144,3 +144,86 @@ func assertUserCols(t *testing.T, db *gorm.DB, id string, cols map[string]int64)
 		}
 	}
 }
+
+// TestReportTrafficAttributesToVirtualChild verifies per-entry attribution:
+// a delta carrying a child node_id is booked to that child (with the parent's
+// inherited multiplier); unknown or empty node_ids fall back to the reporting
+// node.
+func TestReportTrafficAttributesToVirtualChild(t *testing.T) {
+	db := pkgTestDB(t)
+	user := model.User{ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
+		Level: 1, QuotaBytes: 1000000}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	parent := model.Node{ID: "n1", Name: "real", Token: "tok-n1", Address: "p:443", Port: 443,
+		Network: "tcp", Security: "none", TrafficMultiplier: 2, Enabled: true}
+	childParent := parent.ID
+	child := model.Node{ID: "c1", Name: "virt", Token: "c1", Address: "1.1.1.1",
+		Network: "tcp", Security: "none", ParentID: &childParent, Enabled: true}
+	if err := db.Create(&parent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&child).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewServerService(db)
+	err := svc.ReportTraffic("n1", []wire.UserTraffic{
+		{Email: "u1@example.com", NodeID: "c1", Up: 100, Down: 0},  // child entry, 2x → up 200
+		{Email: "u1@example.com", NodeID: "nope", Up: 0, Down: 50}, // unknown → parent, 2x → down 100
+		{Email: "u1@example.com", Up: 10, Down: 10},                // legacy empty → parent, 2x
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rows []model.UserNodeTraffic
+	if err := db.Where("user_id = ?", "u1").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	byNode := map[string]model.UserNodeTraffic{}
+	for _, r := range rows {
+		byNode[r.NodeID] = r
+	}
+	c, ok := byNode["c1"]
+	if !ok {
+		t.Fatalf("no user_node_traffic row for virtual child c1: %+v", rows)
+	}
+	if c.UpTotal != 200 || c.DownTotal != 0 {
+		t.Errorf("child row = up %d / down %d, want 200 / 0 (parent multiplier 2 applied)", c.UpTotal, c.DownTotal)
+	}
+	p, ok := byNode["n1"]
+	if !ok {
+		t.Fatalf("no user_node_traffic row for real node n1: %+v", rows)
+	}
+	if p.UpTotal != 20 || p.DownTotal != 120 {
+		t.Errorf("parent row = up %d / down %d, want 20 / 120", p.UpTotal, p.DownTotal)
+	}
+}
+
+// TestFetchConfigIncludesTrafficSIDs verifies FetchConfig hands the node the
+// sid → virtual child mapping used for entry-point attribution.
+func TestFetchConfigIncludesTrafficSIDs(t *testing.T) {
+	db := pkgTestDB(t)
+	parent := model.Node{ID: "n1", Name: "real", Token: "tok-n1", Address: "p:443", Port: 443,
+		Network: "tcp", Security: "reality", Enabled: true}
+	childParent := parent.ID
+	child := model.Node{ID: "c1", Name: "virt", Token: "c1", Address: "1.1.1.1",
+		Network: "tcp", Security: "reality", ParentID: &childParent, RealitySID: "1234abcd", Enabled: true}
+	if err := db.Create(&parent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&child).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewServerService(db)
+	cfg, err := svc.FetchConfig(&parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.TrafficSIDs) != 1 || cfg.TrafficSIDs[0].NodeID != "c1" || cfg.TrafficSIDs[0].SID != "1234abcd" {
+		t.Errorf("TrafficSIDs = %+v, want [{c1 1234abcd}]", cfg.TrafficSIDs)
+	}
+}

@@ -28,6 +28,13 @@ type Node struct {
 	Settings      datatypes.JSON  `gorm:"type:json" json:"settings"`                              // transport settings (path, x_padding_bytes, ...)
 	TLSConfig     *datatypes.JSON `gorm:"type:json" json:"tls_settings,omitempty"`
 	RealityConfig *datatypes.JSON `gorm:"type:json" json:"reality_settings,omitempty"`
+	// RealitySID is this node's dedicated Reality short ID for entry-point
+	// attribution. Only virtual child nodes use it: the manager keeps it inside
+	// the parent's short_ids whitelist, clients importing this node's share
+	// link connect with it, and the node agent maps the handshake's short ID
+	// back to this node's ID when reporting traffic. Empty = inherit the
+	// parent's default (ShortIds[0]), which attributes traffic to the parent.
+	RealitySID    string          `gorm:"column:reality_sid;size:32;default:''" json:"reality_sid,omitempty"`
 	VLESS         *datatypes.JSON `gorm:"type:json" json:"vless,omitempty"`         // v2 decryption config
 	Flow          *string         `gorm:"size:32;default:''" json:"flow,omitempty"` // "" | xtls-rprx-vision
 	Level         int             `gorm:"default:0" json:"level"`                   // access tier; a user may use the node only if user.level >= node.level (unless explicitly overridden)

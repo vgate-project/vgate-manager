@@ -104,6 +104,7 @@ func applyNodeRequest(req *dto.NodeRequest, node *model.Node) {
 	node.Flow = new(req.Flow)
 	node.Level = req.Level
 	node.AllowInsecure = req.AllowInsecure
+	node.RealitySID = req.RealitySID
 	node.SpeedLimitUpBps = req.SpeedLimitUpBps
 	node.SpeedLimitDownBps = req.SpeedLimitDownBps
 	// Default to 1 when unset/0 so stored value is always a valid multiplier.

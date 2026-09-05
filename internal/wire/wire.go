@@ -14,6 +14,17 @@ type Config struct {
 	// download throughput in bytes/sec (0 = unlimited). Enforced by the node.
 	SpeedLimitUpBps   int64 `json:"speed_limit_up_bps"`
 	SpeedLimitDownBps int64 `json:"speed_limit_down_bps"`
+	// TrafficSIDs maps Reality short IDs to the virtual child node each one
+	// belongs to, so the node can attribute reported traffic to the entry
+	// point (real parent vs virtual child) the client actually used. SIDs not
+	// listed here fall back to this (real) node.
+	TrafficSIDs []TrafficSID `json:"traffic_sids,omitempty"`
+}
+
+// TrafficSID binds one Reality short ID to the virtual child node that owns it.
+type TrafficSID struct {
+	NodeID string `json:"node_id"` // virtual child node ID
+	SID    string `json:"sid"`     // lowercase hex short ID (≤ 16 chars)
 }
 
 // VLESS holds VLESS-protocol inbound settings (v2 AEAD decryption).
@@ -74,9 +85,12 @@ type User struct {
 }
 
 // UserTraffic is a delta traffic report (bytes since last successful report,
-// NOT cumulative). The manager aggregates these into totals.
+// NOT cumulative). The manager aggregates these into totals. NodeID is the
+// entry point the traffic was measured on (a virtual child of the reporting
+// node, matched by Reality short ID); empty means the reporting node itself.
 type UserTraffic struct {
-	Email string `json:"email"`
-	Up    int64  `json:"up"`
-	Down  int64  `json:"down"`
+	Email  string `json:"email"`
+	NodeID string `json:"node_id,omitempty"`
+	Up     int64  `json:"up"`
+	Down   int64  `json:"down"`
 }

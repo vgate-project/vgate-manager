@@ -273,6 +273,45 @@ A user's traffic cap is stored as `quota_bytes` with this sentinel convention:
 The manager filters the authorized users it pushes to proxy nodes accordingly, so a node never serves traffic for a
 blocked or over-quota user.
 
+## Virtual nodes
+
+Nodes live in a single table. A node with `parent_id IS NULL` is a **real node** — an actual
+proxy server that polls the manager, carries the transport/security config, and owns liveness
+(`last_seen_at`). A node with `parent_id` set is a **virtual child**: a metadata record that
+inherits its parent's transport config and only carries its own display identity (`name`,
+`address`, optional `port` override, `level`, `enabled`). Virtual children never poll and never
+authenticate — the node-auth lookup only matches real nodes, and their token is a non-secret
+placeholder (the node's own ID) rather than a minted credential.
+
+Virtual children are the multi-IP story: each child is an alternate entry point onto the same
+server, and every eligible user is served regardless of which entry they use.
+
+**Reality short-ID attribution.** When the parent uses Reality security, each virtual child can
+carry a dedicated `reality_sid` (1–16 hex chars, up to the Reality protocol's 8 bytes):
+
+- The manager keeps the SID inside the parent's `short_ids` whitelist automatically (added on
+  create/update, removed when the child is deleted, cleared, or reparented). Children of a
+  reality parent get a random SID auto-generated when the field is left empty.
+- Subscription links for that child advertise its SID (`sid=` query param / Clash `short-id`),
+  so clients connecting through that entry point present it in the Reality handshake.
+- The manager delivers a `traffic_sids` (SID → child ID) mapping via `GET /server/config`; the
+  node reads the handshake's short ID and reports traffic deltas tagged with the entry point's
+  node ID. `POST /server/traffic` accepts a per-delta `node_id` but only honors IDs that are the
+  reporting node itself or one of its direct children — anything else falls back to the real
+  node (with a warning), so a buggy or hostile node cannot attribute traffic to arbitrary nodes.
+- Traffic attributed to a virtual child inherits the parent's `traffic_multiplier` and lands in
+  `user_node_traffic` under the child's ID, so the admin **Traffic** page can break usage down
+  per entry point. Only the native `tcp` + reality path is attributable — `ws` / `xhttp`
+  (xray-core terminated) and non-reality traffic always book to the real node.
+
+Consistency rules enforced in code: a virtual node cannot be the parent of another virtual node
+(one level only), a node cannot be its own parent, a node with virtual children cannot become a
+virtual child, and parent links are re-validated on update, not only on create.
+
+**Aggregates cover real nodes only.** Dashboard node counts (`GET /admin/stats/overview`) and
+Telegram node-up/down alerts ignore virtual children — they never poll, so counting them would
+only distort the numbers.
+
 ## Telegram integration
 
 The manager can run a Telegram bot that delivers alerts and announcements and lets users and admins bind their personal
@@ -288,8 +327,8 @@ accounts for ticket notifications. It is enabled and configured via DB-backed sy
 | `telegram.alert_announcement`     | `false` | Forward announcements to linked users.              |
 | `telegram.alert_order_paid`       | `false` | Notify on paid orders.                              |
 | `telegram.alert_new_registration` | `false` | Notify on new user registrations.                   |
-| `telegram.alert_node_up`          | `false` | Notify when a node comes online.                    |
-| `telegram.alert_node_down`        | `false` | Notify when a node goes offline.                    |
+| `telegram.alert_node_up`          | `false` | Notify when a real node comes online.               |
+| `telegram.alert_node_down`        | `false` | Notify when a real node goes offline.               |
 | `telegram.alert_traffic_exceeded` | `false` | Notify when a user exceeds their traffic quota.     |
 
 Binding uses a `/start <code>` deep link. The code carries a `u_` (user) or `a_`
@@ -329,6 +368,11 @@ redemption codes and records, announcements, plans — plan prices are stored as
 no separate `plan_prices` write path (the legacy `plan_prices` table is read only as a fallback for historical order
 reads and is not provisioned on a fresh install) — traffic packages,
 traffic grants, balance transactions, orders, tickets, ticket messages, and ticket read states, …).
+After `AutoMigrate`, idempotent data migrations run on every startup (`cmd/migrate.go`): orphaned
+virtual nodes (missing parent) and their assignments are removed, virtual-node tokens are
+normalized to their ID placeholder, a unique index `uk_nodes_sibling_address (parent_id, address,
+port)` keeps sibling entry points distinct, and on PostgreSQL a foreign key `fk_nodes_parent`
+(`parent_id → nodes.id ON DELETE CASCADE`) makes dangling parent links impossible.
 
 ## Background tasks
 

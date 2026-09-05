@@ -4,14 +4,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	"github.com/vgate-project/vgate-manager/internal/model"
 	"github.com/vgate-project/vgate-manager/internal/util"
 	"github.com/vgate-project/vgate-manager/internal/wire"
 )
+
+// realitySIDPattern matches a normalized Reality short ID: 1-16 lowercase hex
+// chars (up to 8 bytes, the Reality protocol maximum).
+var realitySIDPattern = regexp.MustCompile("^[0-9a-f]{1,16}$")
 
 type NodeService struct {
 	db *gorm.DB
@@ -143,7 +150,8 @@ func hydrateVirtualNodes(db *gorm.DB, nodes []*model.Node) error {
 // node (ParentID set) is validated against its parent and gets its own ID as a
 // token placeholder: it never authenticates (NodeAuth only matches real nodes),
 // but the token column is not null + unique, so it needs a value that is
-// clearly not a usable secret.
+// clearly not a usable secret. A virtual child with a Reality short ID gets
+// that SID appended to its parent's short_ids whitelist.
 func (s *NodeService) Create(node *model.Node) error {
 	if node.ID == "" {
 		node.ID = util.NewNodeID()
@@ -155,8 +163,10 @@ func (s *NodeService) Create(node *model.Node) error {
 			node.Token = util.RandomToken(32)
 		}
 	}
+	var parent *model.Node
 	if node.ParentID != nil {
-		parent, err := s.Get(*node.ParentID)
+		var err error
+		parent, err = s.Get(*node.ParentID)
 		if err != nil {
 			return fmt.Errorf("parent node not found: %w", err)
 		}
@@ -167,10 +177,29 @@ func (s *NodeService) Create(node *model.Node) error {
 	if err := validateNode(node); err != nil {
 		return err
 	}
+	// Auto-assign a dedicated Reality short ID to virtual children of reality
+	// nodes so every entry point is attributable out of the box. Admins can
+	// override it in the editor; parents without a reality config get none.
+	if node.ParentID != nil && node.RealitySID == "" && parent.RealityConfig != nil {
+		node.RealitySID = util.RandomToken(8)
+	}
 	if s.nameExists(node.Name, "") {
 		return fmt.Errorf("node name %q already exists", node.Name)
 	}
-	return s.db.Create(node).Error
+	if node.RealitySID != "" {
+		if err := s.checkRealitySIDAvailable(node, parent, ""); err != nil {
+			return err
+		}
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(node).Error; err != nil {
+			return err
+		}
+		if node.ParentID != nil && node.RealitySID != "" {
+			return syncParentShortIDs(tx, *node.ParentID, node.RealitySID, "", node.ID)
+		}
+		return nil
+	})
 }
 
 // nameExists reports whether another node already uses the given name.
@@ -185,20 +214,173 @@ func (s *NodeService) nameExists(name, excludeID string) bool {
 	return count > 0
 }
 
+// checkRealitySIDAvailable rejects a virtual node's Reality short ID when
+// another node already uses it or it collides with the parent's short_ids
+// whitelist entries. ignoreSID is the node's previous SID (allowed because it
+// is being re-set and re-synced); parent may be nil.
+func (s *NodeService) checkRealitySIDAvailable(node *model.Node, parent *model.Node, ignoreSID string) error {
+	var count int64
+	if err := s.db.Model(&model.Node{}).
+		Where("reality_sid = ? AND id <> ?", node.RealitySID, node.ID).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("reality_sid %q is already used by another node", node.RealitySID)
+	}
+	if parent == nil || parent.RealityConfig == nil || node.RealitySID == ignoreSID {
+		return nil
+	}
+	var rc wire.RealityConfig
+	if err := json.Unmarshal(*parent.RealityConfig, &rc); err != nil {
+		return fmt.Errorf("decode parent reality config: %w", err)
+	}
+	for _, sid := range rc.ShortIds {
+		if sid == node.RealitySID {
+			return fmt.Errorf("reality_sid %q collides with the parent node's short_ids", node.RealitySID)
+		}
+	}
+	return nil
+}
+
+// syncParentShortIDs adds addSID to and removes removeSID from the parent
+// node's Reality short_ids whitelist, persisting the updated RealityConfig.
+// The parent row is reloaded by ID so the whitelist is always read from the
+// current transaction state (earlier steps in the same tx may already have
+// modified it). Removal is skipped while another child of the same parent
+// still uses the SID (excludeID is the node being changed or deleted).
+// Parents without a RealityConfig are skipped — there is no whitelist to
+// maintain until the parent is configured for reality, at which point Update
+// re-syncs children.
+func syncParentShortIDs(db *gorm.DB, parentID string, addSID, removeSID, excludeID string) error {
+	if parentID == "" || (addSID == "" && removeSID == "") {
+		return nil
+	}
+	var parent model.Node
+	if err := db.First(&parent, "id = ?", parentID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil // parent already gone; nothing to clean
+		}
+		return err
+	}
+	if parent.RealityConfig == nil {
+		return nil
+	}
+	var rc wire.RealityConfig
+	if err := json.Unmarshal(*parent.RealityConfig, &rc); err != nil {
+		return fmt.Errorf("decode parent reality config: %w", err)
+	}
+	changed := false
+	if removeSID != "" {
+		var others int64
+		if err := db.Model(&model.Node{}).
+			Where("parent_id = ? AND reality_sid = ? AND id <> ?", parent.ID, removeSID, excludeID).
+			Count(&others).Error; err != nil {
+			return err
+		}
+		if others == 0 {
+			kept := rc.ShortIds[:0]
+			for _, sid := range rc.ShortIds {
+				if sid != removeSID {
+					kept = append(kept, sid)
+				}
+			}
+			if len(kept) != len(rc.ShortIds) {
+				rc.ShortIds = kept
+				changed = true
+			}
+		}
+	}
+	if addSID != "" {
+		exists := false
+		for _, sid := range rc.ShortIds {
+			if sid == addSID {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			rc.ShortIds = append(rc.ShortIds, addSID)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	b, err := json.Marshal(rc)
+	if err != nil {
+		return err
+	}
+	return db.Model(&model.Node{}).Where("id = ?", parent.ID).
+		Update("reality_config", datatypes.JSON(b)).Error
+}
+
+// appendChildrenShortIDs adds every virtual child's reality_sid that is
+// missing from the real node's short_ids whitelist. Called when a real node
+// (re)gains a reality config so children configured earlier keep working.
+func appendChildrenShortIDs(db *gorm.DB, parentID string) error {
+	var parent model.Node
+	if err := db.First(&parent, "id = ?", parentID).Error; err != nil {
+		return err
+	}
+	if parent.RealityConfig == nil {
+		return nil
+	}
+	var sids []string
+	if err := db.Model(&model.Node{}).
+		Where("parent_id = ? AND reality_sid <> ?", parentID, "").
+		Pluck("reality_sid", &sids).Error; err != nil {
+		return err
+	}
+	if len(sids) == 0 {
+		return nil
+	}
+	var rc wire.RealityConfig
+	if err := json.Unmarshal(*parent.RealityConfig, &rc); err != nil {
+		return fmt.Errorf("decode parent reality config: %w", err)
+	}
+	existing := make(map[string]bool, len(rc.ShortIds))
+	for _, sid := range rc.ShortIds {
+		existing[sid] = true
+	}
+	changed := false
+	for _, sid := range sids {
+		if !existing[sid] {
+			rc.ShortIds = append(rc.ShortIds, sid)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	b, err := json.Marshal(rc)
+	if err != nil {
+		return err
+	}
+	return db.Model(&model.Node{}).Where("id = ?", parent.ID).
+		Update("reality_config", datatypes.JSON(b)).Error
+}
+
 // Update saves the full node state (PUT-replace semantics). The caller loads
 // the existing node and applies the request before calling Update. Parent
 // assignments are re-validated here — Create checks them too, but Update is a
 // separate write path — so the API cannot produce a dangling, self-referential
-// or two-levels-deep parent link.
+// or two-levels-deep parent link. Reality short IDs are kept in sync with the
+// parent's short_ids whitelist across sid changes, clears and reparenting.
 func (s *NodeService) Update(node *model.Node) error {
-	if err := validateNode(node); err != nil {
+	// Load the persisted row: the handler overwrites ParentID/RealitySID on the
+	// passed struct, so the previous values must come from the database.
+	var old model.Node
+	if err := s.db.Select("id", "parent_id", "reality_sid").First(&old, "id = ?", node.ID).Error; err != nil {
 		return err
 	}
+	var parent *model.Node
 	if node.ParentID != nil {
 		if *node.ParentID == node.ID {
 			return errors.New("a node cannot be its own parent")
 		}
-		parent, err := s.Get(*node.ParentID)
+		var err error
+		parent, err = s.Get(*node.ParentID)
 		if err != nil {
 			return fmt.Errorf("parent node not found: %w", err)
 		}
@@ -216,16 +398,59 @@ func (s *NodeService) Update(node *model.Node) error {
 			return errors.New("a node with virtual children cannot become a virtual node")
 		}
 	}
+	if err := validateNode(node); err != nil {
+		return err
+	}
 	if s.nameExists(node.Name, node.ID) {
 		return fmt.Errorf("node name %q already exists", node.Name)
 	}
-	return s.db.Save(node).Error
+	if node.ParentID != nil && node.RealitySID != "" {
+		if err := s.checkRealitySIDAvailable(node, parent, old.RealitySID); err != nil {
+			return err
+		}
+	}
+	sameParent := old.ParentID != nil && node.ParentID != nil && *old.ParentID == *node.ParentID
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(node).Error; err != nil {
+			return err
+		}
+		// Drop the previous SID from the previous parent's whitelist when the
+		// sid changed, was cleared, or the node moved to another parent.
+		if old.RealitySID != "" && old.ParentID != nil && (old.RealitySID != node.RealitySID || !sameParent) {
+			if err := syncParentShortIDs(tx, *old.ParentID, "", old.RealitySID, node.ID); err != nil {
+				return err
+			}
+		}
+		if node.ParentID != nil && node.RealitySID != "" {
+			if err := syncParentShortIDs(tx, *node.ParentID, node.RealitySID, "", node.ID); err != nil {
+				return err
+			}
+		}
+		// A real node (re)gaining a reality config must whitelist its virtual
+		// children's sids so their share links keep working.
+		if node.ParentID == nil && node.RealityConfig != nil {
+			return appendChildrenShortIDs(tx, node.ID)
+		}
+		return nil
+	})
 }
 
 // Delete removes a node and its user assignments. Virtual child nodes of the
 // deleted node are removed first (cascading), along with their user assignments.
+// If the deleted node is itself a virtual child with a Reality short ID, the
+// SID is dropped from its parent's short_ids whitelist.
 func (s *NodeService) Delete(id string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var self model.Node
+		if err := tx.Select("id", "parent_id", "reality_sid").First(&self, "id = ?", id).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+		} else if self.ParentID != nil && self.RealitySID != "" {
+			if err := syncParentShortIDs(tx, *self.ParentID, "", self.RealitySID, self.ID); err != nil {
+				return err
+			}
+		}
 		var childIDs []string
 		if err := tx.Model(&model.Node{}).Where("parent_id = ?", id).Pluck("id", &childIDs).Error; err != nil {
 			return err
@@ -270,7 +495,19 @@ func validateNode(node *model.Node) error {
 		if node.Address == "" {
 			return errors.New("address is required")
 		}
+		// Reality short ID: optional, normalized to lowercase hex in place so
+		// the stored value, the parent's whitelist and the agent's sid→node
+		// map all agree on one canonical form.
+		node.RealitySID = strings.ToLower(strings.TrimSpace(node.RealitySID))
+		if node.RealitySID != "" && !realitySIDPattern.MatchString(node.RealitySID) {
+			return fmt.Errorf("reality_sid must be 1-16 hex chars (got %q)", node.RealitySID)
+		}
 		return nil
+	}
+	// A real node is the default attribution target; a dedicated sid would be
+	// meaningless on it.
+	if node.RealitySID != "" {
+		return errors.New("reality_sid is only valid on virtual child nodes")
 	}
 	switch node.Network {
 	case "", "tcp", "ws", "xhttp":
