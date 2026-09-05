@@ -430,11 +430,14 @@ func (s *TelegramService) BroadcastToUsers(text string) (sent, total int) {
 	return sent, len(users)
 }
 
-// monitorNodes compares each node's current online state to the last observed
-// state and emits a single node_up / node_down alert on transition.
+// monitorNodes compares each real node's current online state to the last
+// observed state and emits a single node_up / node_down alert on transition.
+// Virtual child nodes (parent_id IS NOT NULL) never poll and would always
+// appear offline, so they are excluded — alerts only fire for nodes that
+// actually produce traffic data.
 func (s *TelegramService) monitorNodes() {
 	var nodes []model.Node
-	if err := s.db.Find(&nodes).Error; err != nil {
+	if err := s.db.Where("parent_id IS NULL").Find(&nodes).Error; err != nil {
 		return
 	}
 	for i := range nodes {

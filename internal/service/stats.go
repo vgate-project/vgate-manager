@@ -53,9 +53,10 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 		return nil, err
 	}
 
-	// Node stats: total count + online. Virtual child nodes never poll, so we
-	// attribute their parent's liveness (consistent with the node list / user
-	// node list, which both call hydrateVirtualNodes).
+	// Node stats: total count + online. Only real nodes (parent_id IS NULL) are
+	// counted here — virtual children never poll and have no live data of their
+	// own, so aggregating them into the dashboard would inflate the count without
+	// reflecting any real signal.
 	nodeCount, nodeOnline, err := s.nodeCounts()
 	if err != nil {
 		return nil, err
@@ -200,19 +201,18 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 	}, nil
 }
 
-// nodeCounts returns the total number of nodes and how many are currently
-// online. Virtual child nodes never poll the manager, so they inherit their
-// parent's liveness via hydrateVirtualNodes — the same semantics the node
-// list and user node list use. A virtual node is online exactly when its real
-// parent is (and offline when the parent is missing or stale).
+// nodeCounts returns the total number of real nodes and how many are currently
+// online. Virtual child nodes (parent_id IS NOT NULL) are excluded: they never
+// poll the manager and have no data of their own, so counting them in the admin
+// overview would distort the numbers. Per-node status for virtual children is
+// still surfaced via NodeService.List / ListNodesForUser, where they hydrate
+// from their real parent.
 func (s *StatsService) nodeCounts() (total, online int64, err error) {
 	var nodes []*model.Node
 	if err := s.db.Model(&model.Node{}).
-		Select("id", "parent_id", "last_seen_at", "enabled").
+		Where("parent_id IS NULL").
+		Select("id", "last_seen_at", "enabled").
 		Find(&nodes).Error; err != nil {
-		return 0, 0, err
-	}
-	if err := hydrateVirtualNodes(s.db, nodes); err != nil {
 		return 0, 0, err
 	}
 	for _, n := range nodes {
