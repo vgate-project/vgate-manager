@@ -286,19 +286,24 @@ placeholder (the node's own ID) rather than a minted credential.
 Virtual children are the multi-IP story: each child is an alternate entry point onto the same
 server, and every eligible user is served regardless of which entry they use.
 
-**Reality short-ID attribution.** When the parent uses Reality security, each virtual child can
-carry a dedicated `reality_sid` (1–16 hex chars, up to the Reality protocol's 8 bytes):
+**Reality short-ID attribution.** Every node carries exactly one `reality_sid` (1–16 hex chars,
+up to the Reality protocol's 8 bytes) — real nodes and virtual children alike:
 
-- The manager keeps the SID inside the parent's `short_ids` whitelist automatically (added on
-  create/update, removed when the child is deleted, cleared, or reparented). Children of a
-  reality parent get a random SID auto-generated when the field is left empty.
-- Subscription links for that child advertise its SID (`sid=` query param / Clash `short-id`),
-  so clients connecting through that entry point present it in the Reality handshake.
-- The manager delivers a `traffic_sids` (SID → child ID) mapping via `GET /server/config`; the
-  node reads the handshake's short ID and reports traffic deltas tagged with the entry point's
-  node ID. `POST /server/traffic` accepts a per-delta `node_id` but only honors IDs that are the
-  reporting node itself or one of its direct children — anything else falls back to the real
-  node (with a warning), so a buggy or hostile node cannot attribute traffic to arbitrary nodes.
+- **Auto-generated and unique.** Creating a reality node (real or virtual) with the field left
+  empty mints a random, globally unique SID. A virtual child's sid has priority over its
+  parent's: if a child takes the parent's own, the parent automatically re-issues a fresh one
+  that avoids every child's sid; a real node cannot manually claim a sid a child holds.
+- **Delivery combines all sids.** The `short_ids` whitelist delivered via `GET /server/config`
+  is computed at config time: the real node's own sid first, then its legacy stored entries,
+  then every virtual child's — deduplicated. Subscription links for each entry point advertise
+  that entry point's own sid (`sid=` query param / Clash `short-id`), so clients connecting
+  through it present it in the Reality handshake.
+- **Per-entry attribution.** The config also carries a `traffic_sids` (SID → child ID) mapping;
+  the node reads the handshake's short ID and reports traffic deltas tagged with the entry
+  point's node ID. `POST /server/traffic` accepts a per-delta `node_id` but only honors IDs that
+  are the reporting node itself or one of its direct children — anything else falls back to the
+  real node (with a warning), so a buggy or hostile node cannot attribute traffic to arbitrary
+  nodes.
 - Traffic attributed to a virtual child inherits the parent's `traffic_multiplier` and lands in
   `user_node_traffic` under the child's ID, so the admin **Traffic** page can break usage down
   per entry point. Only the native `tcp` + reality path is attributable — `ws` / `xhttp`

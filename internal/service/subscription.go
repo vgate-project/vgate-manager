@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -18,6 +19,7 @@ import (
 	vgcrypto "github.com/vgate-project/vgate-manager/pkg/crypto"
 
 	"github.com/vgate-project/vgate-manager/internal/model"
+	"github.com/vgate-project/vgate-manager/internal/wire"
 )
 
 type SubscriptionService struct {
@@ -97,6 +99,17 @@ func (s *SubscriptionService) BuildProxySpecs(user *model.User) ([]proxySpec, er
 	}
 
 	specs := make([]proxySpec, 0, len(nodes))
+	// Reserve each virtual child's dedicated short ID per parent: the child's
+	// sid has priority, so the parent's own link never advertises one.
+	reserved := make(map[string]map[string]bool)
+	for i := range nodes {
+		if n := &nodes[i]; n.ParentID != nil && n.RealitySID != "" {
+			if reserved[*n.ParentID] == nil {
+				reserved[*n.ParentID] = make(map[string]bool)
+			}
+			reserved[*n.ParentID][n.RealitySID] = true
+		}
+	}
 	for i := range nodes {
 		node := &nodes[i] // the row as stored (virtual children keep their own identity fields)
 		src := node
@@ -123,15 +136,47 @@ func (s *SubscriptionService) BuildProxySpecs(user *model.User) ([]proxySpec, er
 			log.Warnf("skip node %s (%s) for user %s: %v", src.ID, src.Name, user.ID, err)
 			continue
 		}
-		// A virtual child with a dedicated Reality short ID overrides the
-		// parent's default one, so clients importing this entry point connect
-		// with a SID the node can attribute back to this child.
-		if node.ParentID != nil && node.RealitySID != "" {
-			spec.RealitySID = node.RealitySID
+		// Deliver each entry point its own short ID: a virtual child advertises
+		// its dedicated reality_sid (a legacy child without one inherits the
+		// real node's own), and the real node advertises its own — never a sid
+		// one of its children holds.
+		if spec.Security == "reality" {
+			if node.ParentID != nil {
+				if node.RealitySID != "" {
+					spec.RealitySID = node.RealitySID
+				} else if p := parents[*node.ParentID]; p != nil {
+					spec.RealitySID = ownRealitySID(p, reserved[*node.ParentID])
+				}
+			} else {
+				spec.RealitySID = ownRealitySID(node, reserved[node.ID])
+			}
 		}
 		specs = append(specs, *spec)
 	}
 	return specs, nil
+}
+
+// ownRealitySID returns the short ID a real node's own share links advertise:
+// its dedicated reality_sid, or — for legacy rows without one — the first
+// entry of its stored whitelist not reserved by a virtual child (a child's
+// sid always wins; the parent never advertises a sid a child holds).
+func ownRealitySID(node *model.Node, reserved map[string]bool) string {
+	if node.RealitySID != "" {
+		return node.RealitySID
+	}
+	if node.RealityConfig == nil {
+		return ""
+	}
+	var rc wire.RealityConfig
+	if err := json.Unmarshal(*node.RealityConfig, &rc); err != nil {
+		return ""
+	}
+	for _, sid := range rc.ShortIds {
+		if !reserved[sid] {
+			return sid
+		}
+	}
+	return ""
 }
 
 // BuildLinks builds a vless:// URL for each node assigned to the user. Kept for

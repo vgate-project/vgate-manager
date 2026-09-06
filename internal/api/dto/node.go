@@ -23,11 +23,11 @@ type NodeRequest struct {
 	Flow            string              `json:"flow"`
 	Level           int                 `json:"level"`
 	AllowInsecure   bool                `json:"allow_insecure"`
-	// RealitySID is the node's dedicated Reality short ID (up to 16 hex chars).
-	// Only meaningful on virtual child nodes whose parent uses reality: the
-	// manager keeps it in the parent's short_ids whitelist and subscription
-	// links for this node use it, so traffic reported with this short ID is
-	// attributed to this node. Empty = use the parent's default short ID.
+	// RealitySID is the node's own Reality short ID (1-16 hex chars) — the one
+	// its share links advertise and the one traffic is attributed to.
+	// Auto-generated and kept globally unique when left empty on create; a
+	// virtual child's sid takes priority over its parent's, which is
+	// re-issued on collision.
 	RealitySID string `json:"reality_sid"`
 	// TrafficMultiplier scales reported traffic at aggregation time (1 = no
 	// change). Omit/0 on create to use the default of 1. Virtual child nodes

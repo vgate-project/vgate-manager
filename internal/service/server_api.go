@@ -55,6 +55,28 @@ func (s *ServerService) FetchConfig(node *model.Node) (*wire.Config, error) {
 			cfg.TrafficSIDs = append(cfg.TrafficSIDs, wire.TrafficSID{NodeID: c.ID, SID: c.RealitySID})
 		}
 	}
+	// The delivered whitelist combines every entry point's short ID — the real
+	// node's own first, then its legacy stored entries, then each virtual
+	// child's. One sid per node; the server accepts them all and the
+	// traffic_sids map above attributes each to its entry point.
+	if cfg.Stream.Security == "reality" && cfg.Stream.RealityConfig != nil {
+		seen := make(map[string]bool)
+		combined := make([]string, 0, len(children)+1)
+		add := func(sid string) {
+			if sid != "" && !seen[sid] {
+				seen[sid] = true
+				combined = append(combined, sid)
+			}
+		}
+		add(node.RealitySID) // the node's own first
+		for _, sid := range cfg.Stream.RealityConfig.ShortIds {
+			add(sid) // legacy stored entries
+		}
+		for _, c := range children {
+			add(c.RealitySID)
+		}
+		cfg.Stream.RealityConfig.ShortIds = combined
+	}
 	return cfg, nil
 }
 

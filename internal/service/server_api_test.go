@@ -1,10 +1,13 @@
 package service
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	"github.com/vgate-project/vgate-manager/internal/model"
@@ -225,5 +228,40 @@ func TestFetchConfigIncludesTrafficSIDs(t *testing.T) {
 	}
 	if len(cfg.TrafficSIDs) != 1 || cfg.TrafficSIDs[0].NodeID != "c1" || cfg.TrafficSIDs[0].SID != "1234abcd" {
 		t.Errorf("TrafficSIDs = %+v, want [{c1 1234abcd}]", cfg.TrafficSIDs)
+	}
+}
+
+// TestFetchConfigCombinesShortIDs verifies the delivered whitelist combines
+// the node's own sid (first), its legacy stored entries, and every virtual
+// child's sid — deduplicated.
+func TestFetchConfigCombinesShortIDs(t *testing.T) {
+	db := pkgTestDB(t)
+	parent := model.Node{ID: "n1", Name: "real", Token: "tok-n1", Address: "p:443", Port: 443,
+		Network: "tcp", Security: "reality", RealitySID: "ownsid12", Enabled: true}
+	rc := wire.RealityConfig{ServerName: "www.example.com", ShortIds: []string{"legacy01", "ownsid12"}}
+	b, _ := json.Marshal(rc)
+	parent.RealityConfig = new(datatypes.JSON(b))
+	if err := db.Create(&parent).Error; err != nil {
+		t.Fatal(err)
+	}
+	childParent := parent.ID
+	c1 := model.Node{ID: "c1", Name: "c1", Token: "tok-c1", Address: "1.1.1.1",
+		Network: "tcp", Security: "reality", ParentID: &childParent, RealitySID: "childa01", Enabled: true}
+	c2 := model.Node{ID: "c2", Name: "c2", Token: "tok-c2", Address: "2.2.2.2",
+		Network: "tcp", Security: "reality", ParentID: &childParent, RealitySID: "childb02", Enabled: true}
+	if err := db.Create(&c1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&c2).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := NewServerService(db).FetchConfig(&parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ownsid12", "legacy01", "childa01", "childb02"}
+	if !reflect.DeepEqual(cfg.Stream.RealityConfig.ShortIds, want) {
+		t.Errorf("delivered short_ids = %v, want %v", cfg.Stream.RealityConfig.ShortIds, want)
 	}
 }

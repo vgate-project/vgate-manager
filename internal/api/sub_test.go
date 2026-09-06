@@ -42,6 +42,8 @@ func TestSubscriptionLink(t *testing.T) {
 			"private_key": priv,
 			"short_ids":   []string{"0123456789abcdef"},
 		},
+		// The node's own short ID — the one its share link advertises.
+		"reality_sid": "0123456789abcdef",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/nodes", bytes.NewReader(nodeBody))
 	auth(req)
