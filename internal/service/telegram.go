@@ -663,7 +663,7 @@ func (s *TelegramService) handleAdminStats(c tb.Context) error {
 	if s.statsSvc == nil {
 		return c.Send("Statistics service is not ready.")
 	}
-	ov, err := s.statsSvc.GetOverview()
+	ov, err := s.statsSvc.GetOverview("")
 	if err != nil {
 		return c.Send("Failed to load statistics.")
 	}

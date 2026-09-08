@@ -149,9 +149,10 @@ func assertUserCols(t *testing.T, db *gorm.DB, id string, cols map[string]int64)
 }
 
 // TestReportTrafficAttributesToVirtualChild verifies per-entry attribution:
-// a delta carrying a child node_id is booked to that child (with the parent's
-// inherited multiplier); unknown or empty node_ids fall back to the reporting
-// node.
+// a delta carrying a child node_id is booked to that child using the CHILD's
+// own multiplier (virtual children no longer inherit the parent's), unknown or
+// empty node_ids fall back to the reporting node, and the per-hour deltas in
+// traffic_hourly_stats are split per entry point (raw, un-multiplied bytes).
 func TestReportTrafficAttributesToVirtualChild(t *testing.T) {
 	db := pkgTestDB(t)
 	user := model.User{ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
@@ -163,7 +164,7 @@ func TestReportTrafficAttributesToVirtualChild(t *testing.T) {
 		Network: "tcp", Security: "none", TrafficMultiplier: 2, Enabled: true}
 	childParent := parent.ID
 	child := model.Node{ID: "c1", Name: "virt", Token: "c1", Address: "1.1.1.1",
-		Network: "tcp", Security: "none", ParentID: &childParent, Enabled: true}
+		Network: "tcp", Security: "none", ParentID: &childParent, TrafficMultiplier: 3, Enabled: true}
 	if err := db.Create(&parent).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +174,7 @@ func TestReportTrafficAttributesToVirtualChild(t *testing.T) {
 
 	svc := NewServerService(db)
 	err := svc.ReportTraffic("n1", []wire.UserTraffic{
-		{Email: "u1@example.com", NodeID: "c1", Up: 100, Down: 0},  // child entry, 2x → up 200
+		{Email: "u1@example.com", NodeID: "c1", Up: 100, Down: 0},  // child entry, own 3x → up 300
 		{Email: "u1@example.com", NodeID: "nope", Up: 0, Down: 50}, // unknown → parent, 2x → down 100
 		{Email: "u1@example.com", Up: 10, Down: 10},                // legacy empty → parent, 2x
 	})
@@ -193,8 +194,8 @@ func TestReportTrafficAttributesToVirtualChild(t *testing.T) {
 	if !ok {
 		t.Fatalf("no user_node_traffic row for virtual child c1: %+v", rows)
 	}
-	if c.UpTotal != 200 || c.DownTotal != 0 {
-		t.Errorf("child row = up %d / down %d, want 200 / 0 (parent multiplier 2 applied)", c.UpTotal, c.DownTotal)
+	if c.UpTotal != 300 || c.DownTotal != 0 {
+		t.Errorf("child row = up %d / down %d, want 300 / 0 (child's own multiplier 3, not parent's 2)", c.UpTotal, c.DownTotal)
 	}
 	p, ok := byNode["n1"]
 	if !ok {
@@ -202,6 +203,67 @@ func TestReportTrafficAttributesToVirtualChild(t *testing.T) {
 	}
 	if p.UpTotal != 20 || p.DownTotal != 120 {
 		t.Errorf("parent row = up %d / down %d, want 20 / 120", p.UpTotal, p.DownTotal)
+	}
+
+	// Hourly deltas are split per entry point and hold the RAW (un-multiplied)
+	// bytes: child 100 up, parent 10 up / 60 down (50 unknown + 10 legacy).
+	hour := time.Now().UTC().Truncate(time.Hour)
+	var stats []model.TrafficHourlyStat
+	if err := db.Where("user_id = ? AND hour = ?", "u1", hour).Find(&stats).Error; err != nil {
+		t.Fatal(err)
+	}
+	byStatNode := map[string]model.TrafficHourlyStat{}
+	for _, s := range stats {
+		byStatNode[s.NodeID] = s
+	}
+	cs, ok := byStatNode["c1"]
+	if !ok {
+		t.Fatalf("no hourly stat row for c1: %+v", stats)
+	}
+	if cs.UpTotal != 100 || cs.DownTotal != 0 {
+		t.Errorf("hourly stat c1 = up %d / down %d, want raw 100 / 0", cs.UpTotal, cs.DownTotal)
+	}
+	ps, ok := byStatNode["n1"]
+	if !ok {
+		t.Fatalf("no hourly stat row for n1: %+v", stats)
+	}
+	if ps.UpTotal != 10 || ps.DownTotal != 60 {
+		t.Errorf("hourly stat n1 = up %d / down %d, want raw 10 / 60", ps.UpTotal, ps.DownTotal)
+	}
+}
+
+// TestReportTrafficAggregatesHourlyStatInBatch verifies that multiple deltas
+// for the same (user, entry point) inside one report batch merge into a single
+// hourly row instead of colliding in the ON CONFLICT upsert.
+func TestReportTrafficAggregatesHourlyStatInBatch(t *testing.T) {
+	db := pkgTestDB(t)
+	user := model.User{ID: "u1", Credential: "u1", Email: "u1@example.com", SubToken: "s1",
+		Level: 1, QuotaBytes: 1000000}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	node := model.Node{ID: "n1", Name: "real", Token: "tok-n1", Address: "p:443", Port: 443,
+		Network: "tcp", Security: "none", Enabled: true}
+	if err := db.Create(&node).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewServerService(db)
+	err := svc.ReportTraffic("n1", []wire.UserTraffic{
+		{Email: "u1@example.com", Up: 30, Down: 0},
+		{Email: "u1@example.com", Up: 70, Down: 0}, // same (user, node, hour) key as above
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hour := time.Now().UTC().Truncate(time.Hour)
+	var stat model.TrafficHourlyStat
+	if err := db.Where("user_id = ? AND node_id = ? AND hour = ?", "u1", "n1", hour).First(&stat).Error; err != nil {
+		t.Fatalf("find stat: %v", err)
+	}
+	if stat.UpTotal != 100 {
+		t.Errorf("batch-merged hourly up = %d, want 100", stat.UpTotal)
 	}
 }
 

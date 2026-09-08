@@ -28,10 +28,14 @@ func (s *StatsService) DeleteOldHourlyStats() error {
 // GetOverview computes dashboard statistics: node/user counts (total +
 // online) and an hourly traffic series for the last 24 hours. The series and
 // 24h totals are derived by SUMming the per-user hourly deltas stored in
-// traffic_hourly_stat (written additively by ServerService.ReportTraffic), so
+// traffic_hourly_stats (written additively by ServerService.ReportTraffic), so
 // no separate cumulative-total query is needed and a quota reset / plan
 // purchase that zeroes users.up_total can no longer produce a negative hour.
-func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
+// A non-empty nodeID narrows the traffic series and 24h totals to a single
+// entry point (a real node or one of its virtual children); every other
+// metric stays global. Legacy rows with node_id = '' (written before the node
+// dimension existed) count toward the unfiltered totals only.
+func (s *StatsService) GetOverview(nodeID string) (*dto.OverviewStats, error) {
 	now := time.Now()
 	hourNow := now.UTC().Truncate(time.Hour)
 	cutoff := hourNow.Add(-24 * time.Hour)
@@ -74,10 +78,13 @@ func (s *StatsService) GetOverview() (*dto.OverviewStats, error) {
 	}
 	var snaps []snapRow
 	prevStart := cutoff.Add(-24 * time.Hour) // start of previous 24h window (= hourNow - 48h)
-	if err := s.db.Model(&model.TrafficHourlyStat{}).
+	hourly := s.db.Model(&model.TrafficHourlyStat{}).
 		Select("hour, SUM(up_total) AS up, SUM(down_total) AS down").
-		Where("hour >= ? AND hour <= ?", prevStart, hourNow).
-		Group("hour").Order("hour ASC").
+		Where("hour >= ? AND hour <= ?", prevStart, hourNow)
+	if nodeID != "" {
+		hourly = hourly.Where("node_id = ?", nodeID)
+	}
+	if err := hourly.Group("hour").Order("hour ASC").
 		Scan(&snaps).Error; err != nil {
 		return nil, err
 	}

@@ -42,8 +42,10 @@ type Node struct {
 	AllowInsecure bool            `gorm:"default:false" json:"allow_insecure"`      // toggles allowInsecure=1 in TLS links
 	// TrafficMultiplier scales the bytes reported by this node's users when the
 	// manager aggregates them (only applied on the manager side). 1 = no change;
-	// >1 inflates reported traffic (e.g. for billing), <1 deflates it. Virtual
-	// child nodes inherit their parent's multiplier.
+	// >1 inflates reported traffic (e.g. for billing), <1 deflates it. Real
+	// nodes and virtual children each use their own stored multiplier —
+	// virtual children no longer inherit their parent's. Speed limits, unlike
+	// the multiplier, are still inherited from the parent (see below).
 	TrafficMultiplier float64 `gorm:"default:1" json:"traffic_multiplier"`
 	// SpeedLimitUpBps / SpeedLimitDownBps cap this node's aggregate upload /
 	// download throughput in bytes/sec (0 = unlimited). Enforced by the node

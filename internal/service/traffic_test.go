@@ -101,10 +101,13 @@ func TestReportTrafficWritesHourlyStat(t *testing.T) {
 
 	hour := time.Now().UTC().Truncate(time.Hour)
 
-	// Hourly row must hold the UN-MULTIPLIED real bytes.
+	// Hourly row must hold the UN-MULTIPLIED real bytes, booked to the node.
 	var stat model.TrafficHourlyStat
-	if err := db.Where("user_id = ? AND hour = ?", "u1", hour).First(&stat).Error; err != nil {
+	if err := db.Where("user_id = ? AND node_id = ? AND hour = ?", "u1", "node1", hour).First(&stat).Error; err != nil {
 		t.Fatalf("find stat: %v", err)
+	}
+	if stat.NodeID != "node1" {
+		t.Errorf("stat node_id = %q, want node1", stat.NodeID)
 	}
 	if stat.UpTotal != 100 || stat.DownTotal != 200 {
 		t.Errorf("stat = (up=%d, down=%d), want real (up=100, down=200)", stat.UpTotal, stat.DownTotal)
@@ -125,7 +128,7 @@ func TestReportTrafficWritesHourlyStat(t *testing.T) {
 	if err := svc.ReportTraffic("node1", deltas); err != nil {
 		t.Fatalf("ReportTraffic #2: %v", err)
 	}
-	if err := db.Where("user_id = ? AND hour = ?", "u1", hour).First(&stat).Error; err != nil {
+	if err := db.Where("user_id = ? AND node_id = ? AND hour = ?", "u1", "node1", hour).First(&stat).Error; err != nil {
 		t.Fatalf("find stat #2: %v", err)
 	}
 	if stat.UpTotal != 200 || stat.DownTotal != 400 {

@@ -461,27 +461,15 @@ func (s *UserService) ListNodesForUser(userID string) ([]model.Node, error) {
 }
 
 // EffectiveTrafficMultiplier returns the multiplier applied to a node's reported
-// traffic. Virtual child nodes inherit their parent's multiplier (mirroring
-// FetchConfig / ReportTraffic on the server side). A non-positive value (an
+// traffic (displayed on the user dashboard). Each entry point — a real node or
+// one of its virtual children — uses its own stored multiplier; virtual
+// children no longer inherit their parent's. A non-positive value (an
 // unset/legacy node) is treated as 1 so traffic is never zeroed.
 func (s *UserService) EffectiveTrafficMultiplier(node model.Node) (float64, error) {
-	if node.ParentID == nil {
-		if node.TrafficMultiplier <= 0 {
-			return 1, nil
-		}
-		return node.TrafficMultiplier, nil
-	}
-	var parent model.Node
-	if err := s.db.Select("traffic_multiplier").First(&parent, "id = ?", *node.ParentID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return 1, nil
-		}
-		return 0, err
-	}
-	if parent.TrafficMultiplier <= 0 {
+	if node.TrafficMultiplier <= 0 {
 		return 1, nil
 	}
-	return parent.TrafficMultiplier, nil
+	return node.TrafficMultiplier, nil
 }
 
 // ListUsersForNode returns the users assigned to a node (all, regardless of

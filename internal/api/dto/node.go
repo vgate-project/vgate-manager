@@ -30,8 +30,8 @@ type NodeRequest struct {
 	// re-issued on collision.
 	RealitySID string `json:"reality_sid"`
 	// TrafficMultiplier scales reported traffic at aggregation time (1 = no
-	// change). Omit/0 on create to use the default of 1. Virtual child nodes
-	// inherit their parent's multiplier and ignore this value.
+	// change). Omit/0 on create to use the default of 1. Real nodes and
+	// virtual children each use their own stored value.
 	TrafficMultiplier float64 `json:"traffic_multiplier"`
 	// SpeedLimitUpBps / SpeedLimitDownBps cap the node's aggregate upload /
 	// download throughput in bytes/sec (0 = unlimited). Ignored by virtual

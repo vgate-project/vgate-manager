@@ -76,9 +76,10 @@ func (s *TrafficService) ListForUser(userID string, page, pageSize int) ([]UserT
 }
 
 // HourlyForUser returns the caller's per-hour traffic for the last 24 hours.
-// Rows in traffic_hourly_stat are written by ServerService.ReportTraffic as
-// per-user, per-hour deltas, so each row is already that hour's traffic (no
-// telescoping). Mirrors StatsService.GetOverview but filtered to a single user.
+// Rows in traffic_hourly_stats are written by ServerService.ReportTraffic as
+// per-user-per-node-per-hour deltas, so the same (user, hour) can span
+// multiple entry points; SUM per hour to reassemble the user's total series.
+// Mirrors StatsService.GetOverview but filtered to a single user.
 // The series spans [cutoff, hourNow] (one point per hour), oldest first;
 // missing hours are reported as 0.
 func (s *TrafficService) HourlyForUser(userID string) ([]dto.HourlyStat, error) {
@@ -92,8 +93,9 @@ func (s *TrafficService) HourlyForUser(userID string) ([]dto.HourlyStat, error) 
 	}
 	var snaps []snapRow
 	if err := s.db.Model(&model.TrafficHourlyStat{}).
-		Select("hour, up_total AS up, down_total AS down").
+		Select("hour, SUM(up_total) AS up, SUM(down_total) AS down").
 		Where("user_id = ? AND hour >= ? AND hour <= ?", userID, cutoff, hourNow).
+		Group("hour").
 		Order("hour ASC").
 		Scan(&snaps).Error; err != nil {
 		return nil, err

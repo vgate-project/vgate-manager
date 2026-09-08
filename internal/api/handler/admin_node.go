@@ -108,6 +108,8 @@ func applyNodeRequest(req *dto.NodeRequest, node *model.Node) {
 	node.SpeedLimitUpBps = req.SpeedLimitUpBps
 	node.SpeedLimitDownBps = req.SpeedLimitDownBps
 	// Default to 1 when unset/0 so stored value is always a valid multiplier.
+	// Applies to real nodes and virtual children alike — virtual children use
+	// their own stored multiplier and no longer inherit their parent's.
 	if req.TrafficMultiplier <= 0 {
 		node.TrafficMultiplier = 1
 	} else {

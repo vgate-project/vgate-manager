@@ -393,6 +393,13 @@ func validateNode(node *model.Node) error {
 	if node.RealitySID != "" && !realitySIDPattern.MatchString(node.RealitySID) {
 		return fmt.Errorf("reality_sid must be 1-16 hex chars (got %q)", node.RealitySID)
 	}
+	// TrafficMultiplier must be a positive factor. Virtual children carry their
+	// own multiplier (no longer inherited from the parent), so this check runs
+	// before the virtual early-return below. (0 is only allowed because
+	// applyNodeRequest normalizes it to 1; reject any other non-positive value.)
+	if node.TrafficMultiplier != 0 && (node.TrafficMultiplier < 0.01 || node.TrafficMultiplier > 1000) {
+		return fmt.Errorf("traffic_multiplier must be between 0.01 and 1000 (got %g)", node.TrafficMultiplier)
+	}
 	if node.ParentID != nil {
 		if node.Name == "" {
 			return errors.New("name is required")
@@ -449,11 +456,7 @@ func validateNode(node *model.Node) error {
 			return errors.New("v2 encryption and xtls-rprx-vision are mutually exclusive")
 		}
 	}
-	// TrafficMultiplier must be a positive factor. (0 is only allowed because
-	// applyNodeRequest normalizes it to 1; reject any other non-positive value.)
-	if node.TrafficMultiplier != 0 && (node.TrafficMultiplier < 0.01 || node.TrafficMultiplier > 1000) {
-		return fmt.Errorf("traffic_multiplier must be between 0.01 and 1000 (got %g)", node.TrafficMultiplier)
-	}
+	// (Multiplier is validated above so virtual children are covered too.)
 	const maxSpeedBps = 10 * 1024 * 1024 * 1024 // 10 Gbps
 	if node.SpeedLimitUpBps < 0 || node.SpeedLimitUpBps > maxSpeedBps {
 		return fmt.Errorf("speed_limit_up_bps must be between 0 and %d bytes/sec (got %d)", maxSpeedBps, node.SpeedLimitUpBps)

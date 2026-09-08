@@ -2,14 +2,18 @@ package model
 
 import "time"
 
-// TrafficHourlyStat stores a per-user cumulative-traffic snapshot at each hour
-// boundary. The hourly aggregation job upserts one row per (user, hour). 24h
-// usage is computed by subtracting the snapshot from 24 hours ago from the
-// current cumulative total. Rows older than 48 hours are pruned.
+// TrafficHourlyStat stores one per-user-per-node-per-hour traffic delta row,
+// written additively by ServerService.ReportTraffic. The (user_id, node_id,
+// hour) primary key lets the dashboard series aggregate across all nodes or
+// filter down to a single entry point (a real node or one of its virtual
+// children). Rows older than 48 hours are pruned. node_id = '' marks rows
+// written before the node dimension existed ("unattributed"); they count
+// toward all-node totals but toward no individual node.
 type TrafficHourlyStat struct {
 	UserID    string    `gorm:"primaryKey;size:36;index"`
-	Hour      time.Time `gorm:"primaryKey;index"` // hour bucket (UTC, truncated to hour)
-	UpTotal   int64     `gorm:"default:0"`        // cumulative up_total at this hour
-	DownTotal int64     `gorm:"default:0"`        // cumulative down_total at this hour
+	NodeID    string    `gorm:"primaryKey;size:26;index"` // entry point the traffic was booked to ('' = legacy unattributed)
+	Hour      time.Time `gorm:"primaryKey;index"`         // hour bucket (UTC, truncated to hour)
+	UpTotal   int64     `gorm:"default:0"`                // raw (un-multiplied) up bytes this hour
+	DownTotal int64     `gorm:"default:0"`                // raw (un-multiplied) down bytes this hour
 	CreatedAt time.Time
 }

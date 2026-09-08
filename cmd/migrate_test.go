@@ -120,3 +120,66 @@ func TestMigrationsIdempotent(t *testing.T) {
 		t.Errorf("node count after repeated migrations = %d, want 1", n)
 	}
 }
+
+// TestMigrateTrafficHourlyStatNodeID verifies the legacy (user_id, hour) table
+// gains the node_id column with '' for pre-existing rows and a
+// (user_id, node_id, hour) primary key, preserving data, and that re-running
+// is a no-op.
+func TestMigrateTrafficHourlyStatNodeID(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	// Legacy shape as found in pre-migration databases (GORM-built, 2-col PK).
+	if err := db.Exec("CREATE TABLE `traffic_hourly_stats` (`user_id` text,`hour` datetime,`up_total` integer DEFAULT 0,`down_total` integer DEFAULT 0,`created_at` datetime,PRIMARY KEY (`user_id`,`hour`))").Error; err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if err := db.Exec("INSERT INTO traffic_hourly_stats (user_id, hour, up_total, down_total) VALUES ('u1', '2026-09-08 10:00:00', 100, 200)").Error; err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	migrateTrafficHourlyStatNodeID(db)
+
+	// Row preserved, folded into the '' unattributed bucket.
+	var row struct {
+		UserID    string
+		NodeID    string
+		UpTotal   int64
+		DownTotal int64
+	}
+	if err := db.Raw("SELECT user_id, node_id, up_total, down_total FROM traffic_hourly_stats WHERE user_id = 'u1'").Scan(&row).Error; err != nil {
+		t.Fatalf("read migrated row: %v", err)
+	}
+	if row.NodeID != "" || row.UpTotal != 100 || row.DownTotal != 200 {
+		t.Errorf("migrated row = %+v, want node_id '' and 100/200 preserved", row)
+	}
+
+	// PK must now cover the three columns, in model order.
+	assertHourlyStatPK(t, db)
+
+	// Re-running must be a no-op (data still intact, same PK).
+	migrateTrafficHourlyStatNodeID(db)
+	if err := db.Raw("SELECT user_id, node_id, up_total, down_total FROM traffic_hourly_stats WHERE user_id = 'u1'").Scan(&row).Error; err != nil {
+		t.Fatalf("read row after re-run: %v", err)
+	}
+	if row.NodeID != "" || row.UpTotal != 100 || row.DownTotal != 200 {
+		t.Errorf("row after re-run = %+v, want unchanged '' 100/200", row)
+	}
+	assertHourlyStatPK(t, db)
+
+	// New-shape writes (upsert on the 3-col PK) work on the migrated table.
+	if err := db.Exec("INSERT INTO traffic_hourly_stats (user_id, node_id, hour, up_total, down_total) VALUES ('u1', 'n1', '2026-09-08 10:00:00', 1, 2)").Error; err != nil {
+		t.Fatalf("insert attributed row alongside legacy bucket: %v", err)
+	}
+}
+
+func assertHourlyStatPK(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var pkCols string
+	if err := db.Raw("SELECT group_concat(name, ',') FROM (SELECT name FROM pragma_table_info('traffic_hourly_stats') WHERE pk > 0 ORDER BY pk)").Scan(&pkCols).Error; err != nil {
+		t.Fatalf("inspect PK: %v", err)
+	}
+	if pkCols != "user_id,node_id,hour" {
+		t.Errorf("PK = (%s), want (user_id,node_id,hour)", pkCols)
+	}
+}

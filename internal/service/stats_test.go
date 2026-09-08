@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+
 	"github.com/vgate-project/vgate-manager/internal/model"
 )
 
@@ -65,5 +68,66 @@ func TestStatsNodeCountsExcludesVirtualNodes(t *testing.T) {
 	}
 	if online != 0 {
 		t.Errorf("online = %d, want 0 (real node stale)", online)
+	}
+}
+
+func overviewTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&model.User{}, &model.Node{}, &model.TrafficHourlyStat{}, &model.Order{},
+	); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return db
+}
+
+// TestGetOverviewFiltersSeriesByNode verifies the optional node filter: the
+// hourly series and 24h totals narrow to one entry point (real node or virtual
+// child), legacy unattributed rows (node_id = '') count toward the unfiltered
+// total only, and the non-traffic metrics stay global.
+func TestGetOverviewFiltersSeriesByNode(t *testing.T) {
+	db := overviewTestDB(t)
+
+	hour := time.Now().UTC().Truncate(time.Hour)
+	rows := []model.TrafficHourlyStat{
+		{UserID: "u1", NodeID: "n1", Hour: hour, UpTotal: 100, DownTotal: 0},
+		{UserID: "u1", NodeID: "c1", Hour: hour, UpTotal: 50, DownTotal: 10},
+		{UserID: "u1", NodeID: "", Hour: hour, UpTotal: 25, DownTotal: 5}, // legacy unattributed
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	svc := NewStatsService(db)
+
+	// Unfiltered: everything sums in (100+50+25 up, 0+10+5 down).
+	ov, err := svc.GetOverview("")
+	if err != nil {
+		t.Fatalf("GetOverview(unfiltered): %v", err)
+	}
+	if ov.Up24h != 175 || ov.Down24h != 15 {
+		t.Errorf("unfiltered 24h = up %d / down %d, want 175 / 15", ov.Up24h, ov.Down24h)
+	}
+
+	// Real node only.
+	ov, err = svc.GetOverview("n1")
+	if err != nil {
+		t.Fatalf("GetOverview(n1): %v", err)
+	}
+	if ov.Up24h != 100 || ov.Down24h != 0 {
+		t.Errorf("n1 24h = up %d / down %d, want 100 / 0", ov.Up24h, ov.Down24h)
+	}
+
+	// Virtual child only.
+	ov, err = svc.GetOverview("c1")
+	if err != nil {
+		t.Fatalf("GetOverview(c1): %v", err)
+	}
+	if ov.Up24h != 50 || ov.Down24h != 10 {
+		t.Errorf("c1 24h = up %d / down %d, want 50 / 10", ov.Up24h, ov.Down24h)
 	}
 }

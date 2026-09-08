@@ -175,16 +175,22 @@ func (s *ServerService) eligibleUserIDs(nodeID string, nodeLevel int) ([]string,
 // The whole update is transactional.
 //
 // The per-node traffic_multiplier scales the bytes reported by a node's users
-// "for billing" (model.Node.TrafficMultiplier), so the CUMULATIVE totals
-// (users.up_total/down_total and user_node_traffic) are written multiplied.
-// The per-user hourly delta in traffic_hourly_stat is written UN-MULTIPLIED
-// (the real reported bytes) so the dashboard 24h series / hourly chart reflects
-// actual traffic rather than the billing-inflated figure.
+// "for billing" (model.Node.TrafficMultiplier): each entry point (a real node
+// or one of its virtual children) uses its own stored multiplier, so the
+// CUMULATIVE totals (users.up_total/down_total and user_node_traffic) are
+// written multiplied.
+// The per-node-per-user hourly delta in traffic_hourly_stat is written
+// UN-MULTIPLIED (the real reported bytes) so the dashboard 24h series / hourly
+// chart reflects actual traffic rather than the billing-inflated figure.
 func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 		hour := now.UTC().Truncate(time.Hour)
-		statRows := make([]model.TrafficHourlyStat, 0, len(deltas))
+		// statAgg merges the batch's raw (un-multiplied) deltas per
+		// (user, entry point) before the single upsert below, so multiple
+		// deltas for the same key in one batch accumulate instead of
+		// colliding in the ON CONFLICT upsert.
+		statAgg := make(map[string]*model.TrafficHourlyStat)
 		mults := make(map[string]float64) // resolved node id → multiplier cache
 		for _, d := range deltas {
 			if d.Up == 0 && d.Down == 0 {
@@ -288,24 +294,34 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 			}).Create(&model.UserNodeTraffic{UserID: user.ID, NodeID: targetNodeID, UpTotal: up, DownTotal: down}).Error; err != nil {
 				return fmt.Errorf("upsert node traffic: %w", err)
 			}
-			// Per-user hourly delta for the dashboard traffic series. Written
-			// UN-MULTIPLIED (the real reported bytes) so the time-series chart
-			// reflects actual traffic; the cumulative totals above are the
-			// multiplied (billing) figures. Upserted additively so concurrent
-			// reports from multiple nodes accumulate into the same
-			// (user_id, hour) bucket.
-			statRows = append(statRows, model.TrafficHourlyStat{
-				UserID:    user.ID,
-				Hour:      hour,
-				UpTotal:   d.Up,
-				DownTotal: d.Down,
-			})
+			// Per-user-per-node hourly delta for the dashboard traffic series.
+			// Written UN-MULTIPLIED (the real reported bytes) so the time-series
+			// chart reflects actual traffic; the cumulative totals above are the
+			// multiplied (billing) figures. Merged per (user, node) within the
+			// batch; the upsert below accumulates across concurrent reports.
+			statKey := user.ID + "\x00" + targetNodeID
+			if agg, ok := statAgg[statKey]; ok {
+				agg.UpTotal += d.Up
+				agg.DownTotal += d.Down
+			} else {
+				statAgg[statKey] = &model.TrafficHourlyStat{
+					UserID:    user.ID,
+					NodeID:    targetNodeID,
+					Hour:      hour,
+					UpTotal:   d.Up,
+					DownTotal: d.Down,
+				}
+			}
 		}
 
-		// Additively upsert all per-user hourly deltas in a single statement.
-		if len(statRows) > 0 {
+		// Additively upsert all per-user-per-node hourly deltas in one statement.
+		if len(statAgg) > 0 {
+			statRows := make([]model.TrafficHourlyStat, 0, len(statAgg))
+			for _, agg := range statAgg {
+				statRows = append(statRows, *agg)
+			}
 			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "user_id"}, {Name: "hour"}},
+				Columns: []clause.Column{{Name: "user_id"}, {Name: "node_id"}, {Name: "hour"}},
 				DoUpdates: clause.Assignments(map[string]any{
 					"up_total":   gorm.Expr("up_total + EXCLUDED.up_total"),
 					"down_total": gorm.Expr("down_total + EXCLUDED.down_total"),
@@ -340,29 +356,17 @@ func resolveTrafficNode(db *gorm.DB, nodeID, claimed string) (string, error) {
 	return child.ID, nil
 }
 
-// nodeTrafficMultiplier returns the effective traffic multiplier for a node.
-// Virtual child nodes inherit their parent's multiplier. A multiplier <= 0 (an
+// nodeTrafficMultiplier returns the traffic multiplier stored on the node
+// itself. Real nodes and virtual children each carry their own multiplier —
+// virtual children no longer inherit their parent's. A multiplier <= 0 (an
 // unset/legacy node) is treated as 1 so traffic is never zeroed or corrupted.
 func nodeTrafficMultiplier(db *gorm.DB, nodeID string) (float64, error) {
 	var node model.Node
-	if err := db.Select("parent_id", "traffic_multiplier").First(&node, "id = ?", nodeID).Error; err != nil {
+	if err := db.Select("traffic_multiplier").First(&node, "id = ?", nodeID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return 1, nil
 		}
 		return 0, fmt.Errorf("lookup node %s: %w", nodeID, err)
-	}
-	if node.ParentID != nil {
-		var parent model.Node
-		if err := db.Select("traffic_multiplier").First(&parent, "id = ?", *node.ParentID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return 1, nil
-			}
-			return 0, fmt.Errorf("lookup parent node: %w", err)
-		}
-		if parent.TrafficMultiplier <= 0 {
-			return 1, nil
-		}
-		return parent.TrafficMultiplier, nil
 	}
 	if node.TrafficMultiplier <= 0 {
 		return 1, nil

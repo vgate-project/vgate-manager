@@ -13,8 +13,8 @@ type UserNodeView struct {
 	Enabled    bool       `json:"enabled"`
 	Online     bool       `json:"online"`
 	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
-	// TrafficMultiplier is the effective multiplier applied to this node's
-	// reported traffic. Virtual child nodes inherit their parent's multiplier.
+	// TrafficMultiplier is the multiplier applied to this node's reported
+	// traffic. Real nodes and virtual children each use their own stored value.
 	TrafficMultiplier float64 `json:"traffic_multiplier"`
 }
 
