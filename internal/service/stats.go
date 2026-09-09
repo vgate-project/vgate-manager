@@ -17,11 +17,17 @@ func NewStatsService(db *gorm.DB) *StatsService {
 	return &StatsService{db: db}
 }
 
-// DeleteOldHourlyStats prunes traffic_hourly_stat rows older than 48h. The hourly
-// per-user deltas are now written directly by ServerService.ReportTraffic, so
-// this job no longer creates snapshots — it only expires stale rows. Idempotent.
+// hourlyStatRetention is how long per-user-per-node hourly traffic rows are
+// kept before pruning. The dashboard series only reads the last 48h; the extra
+// history powers the admin/user traffic detail pages (30 days of records).
+const hourlyStatRetention = 30 * 24 * time.Hour
+
+// DeleteOldHourlyStats prunes traffic_hourly_stat rows older than
+// hourlyStatRetention (30 days). The hourly per-user deltas are now written
+// directly by ServerService.ReportTraffic, so this job no longer creates
+// snapshots — it only expires stale rows. Idempotent.
 func (s *StatsService) DeleteOldHourlyStats() error {
-	cutoff := time.Now().UTC().Truncate(time.Hour).Add(-48 * time.Hour)
+	cutoff := time.Now().UTC().Truncate(time.Hour).Add(-hourlyStatRetention)
 	return s.db.Where("hour < ?", cutoff).Delete(&model.TrafficHourlyStat{}).Error
 }
 

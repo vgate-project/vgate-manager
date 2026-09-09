@@ -181,7 +181,9 @@ func (s *ServerService) eligibleUserIDs(nodeID string, nodeLevel int) ([]string,
 // written multiplied.
 // The per-node-per-user hourly delta in traffic_hourly_stat is written
 // UN-MULTIPLIED (the real reported bytes) so the dashboard 24h series / hourly
-// chart reflects actual traffic rather than the billing-inflated figure.
+// chart reflects actual traffic rather than the billing-inflated figure; the
+// multiplier actually applied is stored on the row so detail views can derive
+// the billed bytes (raw × multiplier).
 func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
@@ -297,19 +299,25 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 			// Per-user-per-node hourly delta for the dashboard traffic series.
 			// Written UN-MULTIPLIED (the real reported bytes) so the time-series
 			// chart reflects actual traffic; the cumulative totals above are the
-			// multiplied (billing) figures. Merged per (user, node) within the
-			// batch; the upsert below accumulates across concurrent reports.
+			// multiplied (billing) figures. The applied multiplier is captured on
+			// the row so traffic detail views can show raw, multiplier and billed
+			// bytes without re-reading the node (and without history changing
+			// when a node's multiplier is edited later). Merged per (user, node)
+			// within the batch; the upsert below accumulates across concurrent
+			// reports and keeps the latest multiplier.
 			statKey := user.ID + "\x00" + targetNodeID
 			if agg, ok := statAgg[statKey]; ok {
 				agg.UpTotal += d.Up
 				agg.DownTotal += d.Down
+				agg.Multiplier = mult
 			} else {
 				statAgg[statKey] = &model.TrafficHourlyStat{
-					UserID:    user.ID,
-					NodeID:    targetNodeID,
-					Hour:      hour,
-					UpTotal:   d.Up,
-					DownTotal: d.Down,
+					UserID:     user.ID,
+					NodeID:     targetNodeID,
+					Hour:       hour,
+					UpTotal:    d.Up,
+					DownTotal:  d.Down,
+					Multiplier: mult,
 				}
 			}
 		}
@@ -325,6 +333,7 @@ func (s *ServerService) ReportTraffic(nodeID string, deltas []wire.UserTraffic) 
 				DoUpdates: clause.Assignments(map[string]any{
 					"up_total":   gorm.Expr("up_total + EXCLUDED.up_total"),
 					"down_total": gorm.Expr("down_total + EXCLUDED.down_total"),
+					"multiplier": gorm.Expr("EXCLUDED.multiplier"),
 				}),
 			}).Create(&statRows).Error; err != nil {
 				return fmt.Errorf("upsert hourly stat: %w", err)

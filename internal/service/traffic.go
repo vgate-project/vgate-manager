@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math"
 	"time"
 
 	"gorm.io/gorm"
@@ -17,62 +18,106 @@ func NewTrafficService(db *gorm.DB) *TrafficService {
 	return &TrafficService{db: db}
 }
 
-// TrafficRow is one per-node-per-user cumulative traffic row.
-type TrafficRow struct {
-	UserID    string `json:"user_id"`
-	Email     string `json:"email"`
-	NodeID    string `json:"node_id"`
-	UpTotal   int64  `json:"up_total"`
-	DownTotal int64  `json:"down_total"`
+// TrafficRecord is one per-user-per-node-per-hour traffic detail row as shown
+// on the admin traffic page: the raw (un-multiplied) bytes reported that hour,
+// the multiplier in effect when they were written, and the billed bytes
+// (raw × multiplier) that were charged against the user's quota.
+type TrafficRecord struct {
+	Hour       time.Time `json:"hour"` // UTC hour bucket
+	UserID     string    `json:"user_id"`
+	Email      string    `json:"email"`
+	NodeID     string    `json:"node_id"`
+	UpTotal    int64     `json:"up_total"`
+	DownTotal  int64     `json:"down_total"`
+	Multiplier float64   `json:"multiplier"`
+	UpBilled   int64     `json:"up_billed"`
+	DownBilled int64     `json:"down_billed"`
 }
 
-// UserTrafficRow is one per-node cumulative traffic row for a single user,
-// enriched with the node's display name.
-type UserTrafficRow struct {
-	NodeID    string `json:"node_id"`
-	NodeName  string `json:"node_name"`
-	UpTotal   int64  `json:"up_total"`
-	DownTotal int64  `json:"down_total"`
+// UserTrafficRecord is one hourly traffic detail row for a single user,
+// enriched with the node's display name. Used by /user/traffic.
+type UserTrafficRecord struct {
+	Hour       time.Time `json:"hour"` // UTC hour bucket
+	NodeID     string    `json:"node_id"`
+	NodeName   string    `json:"node_name"`
+	UpTotal    int64     `json:"up_total"`
+	DownTotal  int64     `json:"down_total"`
+	Multiplier float64   `json:"multiplier"`
+	UpBilled   int64     `json:"up_billed"`
+	DownBilled int64     `json:"down_billed"`
 }
 
-// List returns per-node-per-user cumulative traffic, optionally filtered by
-// user_id and/or node_id. Time-range filtering requires the (deferred)
-// traffic log table and is not supported in v1.
-func (s *TrafficService) List(userID, nodeID string, page, pageSize int) ([]TrafficRow, int64, error) {
-	q := s.db.Table("user_node_traffic").
-		Joins("JOIN users ON users.id = user_node_traffic.user_id")
+// billed rounds raw × multiplier the same way ReportTraffic rounds the bytes
+// it charges, so the detail views' billed columns match the deduction math.
+func billed(raw int64, mult float64) int64 {
+	return int64(math.Round(float64(raw) * mult))
+}
+
+// List returns per-user-per-node hourly traffic detail rows from
+// traffic_hourly_stats — the actual hourly deltas, not lifetime aggregates —
+// optionally filtered by user_id, node_id and an hour range [from, to)
+// (bounds truncated to the hour; from inclusive, to exclusive). Legacy
+// unattributed rows (node_id = '') carry no entry point to display and are
+// skipped; they age out of the retention window.
+func (s *TrafficService) List(userID, nodeID string, from, to *time.Time, page, pageSize int) ([]TrafficRecord, int64, error) {
+	q := s.db.Table("traffic_hourly_stats").
+		Joins("JOIN users ON users.id = traffic_hourly_stats.user_id").
+		Where("traffic_hourly_stats.node_id <> ''")
 	if userID != "" {
-		q = q.Where("user_node_traffic.user_id = ?", userID)
+		q = q.Where("traffic_hourly_stats.user_id = ?", userID)
 	}
 	if nodeID != "" {
-		q = q.Where("user_node_traffic.node_id = ?", nodeID)
+		q = q.Where("traffic_hourly_stats.node_id = ?", nodeID)
+	}
+	if from != nil {
+		q = q.Where("traffic_hourly_stats.hour >= ?", from.UTC().Truncate(time.Hour))
+	}
+	if to != nil {
+		q = q.Where("traffic_hourly_stats.hour < ?", to.UTC().Truncate(time.Hour))
 	}
 	var total int64
-	q.Count(&total)
-	var rows []TrafficRow
-	err := q.Select("user_node_traffic.user_id, users.email, user_node_traffic.node_id, user_node_traffic.up_total, user_node_traffic.down_total").
-		Order("user_node_traffic.updated_at DESC").
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []TrafficRecord
+	err := q.Select("traffic_hourly_stats.hour, traffic_hourly_stats.user_id, users.email, traffic_hourly_stats.node_id, traffic_hourly_stats.up_total, traffic_hourly_stats.down_total, traffic_hourly_stats.multiplier").
+		Order("traffic_hourly_stats.hour DESC, users.email ASC").
 		Limit(pageSize).Offset((page - 1) * pageSize).
 		Scan(&rows).Error
-	return rows, total, err
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range rows {
+		rows[i].UpBilled = billed(rows[i].UpTotal, rows[i].Multiplier)
+		rows[i].DownBilled = billed(rows[i].DownTotal, rows[i].Multiplier)
+	}
+	return rows, total, nil
 }
 
-// ListForUser returns the caller's per-node cumulative traffic, enriched with
-// each node's display name. Used by the user-facing /user/traffic endpoint.
-func (s *TrafficService) ListForUser(userID string, page, pageSize int) ([]UserTrafficRow, int64, error) {
-	q := s.db.Table("user_node_traffic").
-		Joins("JOIN nodes ON nodes.id = user_node_traffic.node_id")
-	if userID != "" {
-		q = q.Where("user_node_traffic.user_id = ?", userID)
-	}
+// ListForUser returns the caller's hourly traffic detail rows, enriched with
+// each node's display name, newest hour first. Legacy unattributed rows
+// (node_id = '') have no node to name and are skipped.
+func (s *TrafficService) ListForUser(userID string, page, pageSize int) ([]UserTrafficRecord, int64, error) {
+	q := s.db.Table("traffic_hourly_stats").
+		Joins("JOIN nodes ON nodes.id = traffic_hourly_stats.node_id").
+		Where("traffic_hourly_stats.user_id = ?", userID)
 	var total int64
-	q.Count(&total)
-	var rows []UserTrafficRow
-	err := q.Select("user_node_traffic.node_id, nodes.name as node_name, user_node_traffic.up_total, user_node_traffic.down_total").
-		Order("user_node_traffic.updated_at DESC").
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []UserTrafficRecord
+	err := q.Select("traffic_hourly_stats.hour, traffic_hourly_stats.node_id, nodes.name as node_name, traffic_hourly_stats.up_total, traffic_hourly_stats.down_total, traffic_hourly_stats.multiplier").
+		Order("traffic_hourly_stats.hour DESC").
 		Limit(pageSize).Offset((page - 1) * pageSize).
 		Scan(&rows).Error
-	return rows, total, err
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range rows {
+		rows[i].UpBilled = billed(rows[i].UpTotal, rows[i].Multiplier)
+		rows[i].DownBilled = billed(rows[i].DownTotal, rows[i].Multiplier)
+	}
+	return rows, total, nil
 }
 
 // HourlyForUser returns the caller's per-hour traffic for the last 24 hours.

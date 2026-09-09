@@ -6,7 +6,7 @@ import "time"
 // written additively by ServerService.ReportTraffic. The (user_id, node_id,
 // hour) primary key lets the dashboard series aggregate across all nodes or
 // filter down to a single entry point (a real node or one of its virtual
-// children). Rows older than 48 hours are pruned. node_id = '' marks rows
+// children). Rows older than 30 days are pruned. node_id = '' marks rows
 // written before the node dimension existed ("unattributed"); they count
 // toward all-node totals but toward no individual node.
 type TrafficHourlyStat struct {
@@ -15,5 +15,10 @@ type TrafficHourlyStat struct {
 	Hour      time.Time `gorm:"primaryKey;index"`         // hour bucket (UTC, truncated to hour)
 	UpTotal   int64     `gorm:"default:0"`                // raw (un-multiplied) up bytes this hour
 	DownTotal int64     `gorm:"default:0"`                // raw (un-multiplied) down bytes this hour
-	CreatedAt time.Time
+	// Multiplier captured at write time — the node's effective traffic
+	// multiplier for this hour's reports. When the node's multiplier changes
+	// mid-hour the last report wins, so billed = raw × multiplier is an
+	// approximation for that hour only.
+	Multiplier float64   `gorm:"default:1"`
+	CreatedAt  time.Time
 }

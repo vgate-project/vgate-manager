@@ -170,7 +170,8 @@ func run(cmd *cobra.Command) {
 		}
 	}()
 
-	// Clean up old hourly stats: they're only needed for the last 48h.
+	// Clean up old hourly stats: the dashboard needs the last 48h, the traffic
+	// detail pages keep 30 days of records (see hourlyStatRetention).
 	statsSvc := service.NewStatsService(db)
 	go func() {
 		if err := statsSvc.DeleteOldHourlyStats(); err != nil {
