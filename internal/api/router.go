@@ -193,6 +193,7 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 
 		userProtected.GET("/traffic", userTrafficH.List)
 		userProtected.GET("/traffic/hourly", userTrafficH.Hourly)
+		userProtected.GET("/traffic/stats", userTrafficH.Stats)
 
 		userProtected.POST("/change-password", userAuthH.ChangePassword)
 
@@ -291,6 +292,9 @@ func NewRouter(db *gorm.DB, cfg *config.Config, authSvc *service.AuthService, sy
 		adminAuth.PUT("/users/:id/nodes", adminUserH.SetNodes)
 
 		adminAuth.GET("/traffic", adminTrafficH.List)
+		adminAuth.GET("/traffic/stats", adminTrafficH.Stats)
+		adminAuth.GET("/traffic/aggregate", adminTrafficH.Aggregate)
+		adminAuth.GET("/traffic/export", adminTrafficH.Export)
 		adminAuth.GET("/stats/overview", adminStatsH.Overview)
 		adminAuth.POST("/utils/generate-x25519", adminUtilH.GenerateX25519)
 
