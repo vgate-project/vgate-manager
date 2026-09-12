@@ -59,4 +59,7 @@ type Order struct {
 	ExpiredAt           *time.Time `gorm:"index" json:"expired_at,omitempty"` // cron close threshold
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
+
+	// UserEmail is populated on demand for admin listings; not persisted.
+	UserEmail string `gorm:"-" json:"user_email,omitempty"`
 }

@@ -182,3 +182,61 @@ func TestCreateTrafficAsPlanBonus(t *testing.T) {
 		t.Errorf("grant QuotaBytes = %d, want %d", grants[0].QuotaBytes, int64(100<<30))
 	}
 }
+
+// TestAdminListPopulatesUserEmail seeds two users with orders (plus one
+// orphaned order whose user is gone) and checks that the admin listing
+// populates UserEmail, searches by email, sorts by email, and falls back to
+// an empty email for deleted users.
+func TestAdminListPopulatesUserEmail(t *testing.T) {
+	db := orderTestDB(t)
+	for _, u := range []model.User{
+		{ID: "u1", Credential: "u1", Email: "alice@example.com", SubToken: "s1"},
+		{ID: "u2", Credential: "u2", Email: "bob@example.com", SubToken: "s2"},
+	} {
+		if err := db.Create(&u).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	orders := []model.Order{
+		{ID: "o1", UserID: "u1", OutTradeNo: "t1", Amount: 100, Status: model.OrderStatusPaid},
+		{ID: "o2", UserID: "u2", OutTradeNo: "t2", Amount: 200, Status: model.OrderStatusPending},
+		{ID: "o3", UserID: "ghost", OutTradeNo: "t3", Amount: 300, Status: model.OrderStatusPending},
+	}
+	for i := range orders {
+		if err := db.Create(&orders[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := newOrderService(t, db)
+
+	// Plain listing: emails populated, orphaned order shows empty email.
+	items, total, err := svc.List(OrderListFilter{}, 1, 20)
+	if err != nil || total != 3 || len(items) != 3 {
+		t.Fatalf("List: err=%v total=%d len=%d", err, total, len(items))
+	}
+	emailByID := map[string]string{"o1": "alice@example.com", "o2": "bob@example.com", "o3": ""}
+	for _, o := range items {
+		if o.UserEmail != emailByID[o.ID] {
+			t.Errorf("order %s UserEmail = %q, want %q", o.ID, o.UserEmail, emailByID[o.ID])
+		}
+	}
+
+	// Search by email substring matches only that user's orders.
+	items, total, err = svc.List(OrderListFilter{Search: "alice@"}, 1, 20)
+	if err != nil || total != 1 || len(items) != 1 || items[0].ID != "o1" {
+		t.Fatalf("search by email: err=%v total=%d items=%+v", err, total, items)
+	}
+
+	// Sort by email asc: alice < bob < (orphan, NULL sorts first in sqlite).
+	items, _, err = svc.List(OrderListFilter{SortBy: "email", Order: "asc"}, 1, 20)
+	if err != nil {
+		t.Fatalf("sort by email: %v", err)
+	}
+	got := []string{items[0].ID, items[1].ID, items[2].ID}
+	want := []string{"o3", "o1", "o2"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("email asc order = %v, want %v", got, want)
+		}
+	}
+}

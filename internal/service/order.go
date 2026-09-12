@@ -769,9 +769,9 @@ func (s *OrderService) ListMine(userID string, page, pageSize int) ([]model.Orde
 
 // OrderListFilter holds optional filtering/sorting parameters for List.
 type OrderListFilter struct {
-	Search string // substring match on user_id or out_trade_no
+	Search string // substring match on user_id, user email or out_trade_no
 	Status string // pending|paid|closed; empty = all
-	SortBy string // created_at|amount|status|paid_at|user_id|kind
+	SortBy string // created_at|amount|status|paid_at|user_id|kind|email
 	Order  string // asc|desc
 }
 
@@ -785,12 +785,13 @@ var orderSortableColumns = map[string]string{
 	"kind":       "kind",
 }
 
-// List returns all orders (admin), with optional filtering/sorting.
+// List returns all orders (admin), with optional filtering/sorting. UserEmail
+// is populated for display.
 func (s *OrderService) List(filter OrderListFilter, page, pageSize int) ([]model.Order, int64, error) {
 	q := s.db.Model(&model.Order{})
 	if filter.Search != "" {
 		like := "%" + filter.Search + "%"
-		q = q.Where("user_id LIKE ? OR out_trade_no LIKE ?", like, like)
+		q = q.Where("user_id LIKE ? OR out_trade_no LIKE ? OR user_id IN (SELECT id FROM users WHERE email LIKE ?)", like, like, like)
 	}
 	if filter.Status != "" {
 		q = q.Where("status = ?", filter.Status)
@@ -802,7 +803,16 @@ func (s *OrderService) List(filter OrderListFilter, page, pageSize int) ([]model
 	}
 
 	order := "created_at DESC"
-	if col, ok := orderSortableColumns[filter.SortBy]; ok {
+	if filter.SortBy == "email" {
+		// Sorting by the owner's email needs the users table; LEFT JOIN keeps
+		// orphaned orders (deleted user) listed instead of dropping them.
+		q = q.Joins("LEFT JOIN users ON users.id = orders.user_id")
+		dir := "ASC"
+		if strings.EqualFold(filter.Order, "desc") {
+			dir = "DESC"
+		}
+		order = "users.email " + dir
+	} else if col, ok := orderSortableColumns[filter.SortBy]; ok {
 		dir := "ASC"
 		if strings.EqualFold(filter.Order, "desc") {
 			dir = "DESC"
@@ -814,7 +824,33 @@ func (s *OrderService) List(filter OrderListFilter, page, pageSize int) ([]model
 	err := q.Order(order).
 		Limit(pageSize).Offset((page - 1) * pageSize).
 		Find(&orders).Error
-	return orders, total, err
+	if err != nil {
+		return nil, 0, err
+	}
+	s.populateUserEmails(orders)
+	return orders, total, nil
+}
+
+// populateUserEmails batch-loads the owner emails for a page of orders.
+func (s *OrderService) populateUserEmails(orders []model.Order) {
+	if len(orders) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(orders))
+	for _, o := range orders {
+		ids = append(ids, o.UserID)
+	}
+	var users []model.User
+	if err := s.db.Select("id, email").Where("id IN ?", ids).Find(&users).Error; err != nil {
+		return
+	}
+	emailByID := make(map[string]string, len(users))
+	for _, u := range users {
+		emailByID[u.ID] = u.Email
+	}
+	for i := range orders {
+		orders[i].UserEmail = emailByID[orders[i].UserID]
+	}
 }
 
 // Get returns an order, enforcing that it belongs to userID.
