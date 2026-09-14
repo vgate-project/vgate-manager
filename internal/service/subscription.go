@@ -415,6 +415,9 @@ func (s *SubscriptionService) Render(user *model.User, clientType string) (conte
 type clashRealityOpts struct {
 	PublicKey string `yaml:"public-key"`
 	ShortId   string `yaml:"short-id"`
+	// mihomo strips the X25519MLKEM768 key share unless this is enabled, and
+	// reality servers built from xtls/reality >= 2026-09 reject such clients.
+	SupportX25519MLKEM768 bool `yaml:"support-x25519mlkem768,omitempty"`
 }
 
 type clashWSOpts struct {
@@ -495,7 +498,7 @@ func buildClashYAML(specs []proxySpec) ([]byte, error) {
 		}
 		if s.Security == "reality" {
 			p.ClientFingerprint = s.FP
-			p.RealityOpts = &clashRealityOpts{PublicKey: s.RealityPBK, ShortId: s.RealitySID}
+			p.RealityOpts = &clashRealityOpts{PublicKey: s.RealityPBK, ShortId: s.RealitySID, SupportX25519MLKEM768: true}
 		}
 		switch s.Network {
 		case "ws":

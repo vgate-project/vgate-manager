@@ -139,11 +139,16 @@ func TestSubscriptionLink(t *testing.T) {
 	}
 	var clash struct {
 		Proxies []struct {
-			Name   string `yaml:"name"`
-			Type   string `yaml:"type"`
-			Server string `yaml:"server"`
-			Port   int    `yaml:"port"`
-			UUID   string `yaml:"uuid"`
+			Name        string `yaml:"name"`
+			Type        string `yaml:"type"`
+			Server      string `yaml:"server"`
+			Port        int    `yaml:"port"`
+			UUID        string `yaml:"uuid"`
+			RealityOpts *struct {
+				PublicKey             string `yaml:"public-key"`
+				ShortId               string `yaml:"short-id"`
+				SupportX25519MLKEM768 bool   `yaml:"support-x25519mlkem768"`
+			} `yaml:"reality-opts"`
 		} `yaml:"proxies"`
 	}
 	if err := yaml.Unmarshal(w.Body.Bytes(), &clash); err != nil {
@@ -155,6 +160,10 @@ func TestSubscriptionLink(t *testing.T) {
 	cp := clash.Proxies[0]
 	if cp.Type != "vless" || cp.Server != "hk.example.com" || cp.Port != 443 || cp.UUID != credential || cp.Name != "hk-1" {
 		t.Errorf("clash proxy = %+v", cp)
+	}
+	if cp.RealityOpts == nil || cp.RealityOpts.PublicKey != expectedPBK ||
+		cp.RealityOpts.ShortId != "0123456789abcdef" || !cp.RealityOpts.SupportX25519MLKEM768 {
+		t.Errorf("clash reality-opts = %+v", cp.RealityOpts)
 	}
 
 	// UA detection: Clash UA (no ?type) → YAML.
